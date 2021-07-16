@@ -76,6 +76,9 @@ void Rover::Log_Write_Depth()
                         loc.lng,
                         (double)(rangefinder.distance_cm_orient(ROTATION_PITCH_270) * 0.01f),
                         temp_C);
+
+    // send water depth and temp to ground station
+    gcs().send_message(MSG_WATER_DEPTH);
 }
 
 // guided mode logging
@@ -140,38 +143,31 @@ void Rover::Log_Write_Sail()
         return;
     }
 
-    // get wind direction
-    float wind_dir_abs = logger.quiet_nanf();
-    float wind_dir_rel = logger.quiet_nanf();
-    float wind_speed_true = logger.quiet_nanf();
-    float wind_speed_apparent = logger.quiet_nanf();
+    float wind_dir_tack = logger.quiet_nanf();
+    uint8_t current_tack = 0;
     if (rover.g2.windvane.enabled()) {
-        wind_dir_abs = degrees(g2.windvane.get_true_wind_direction_rad());
-        wind_dir_rel = degrees(g2.windvane.get_apparent_wind_direction_rad());
-        wind_speed_true = g2.windvane.get_true_wind_speed();
-        wind_speed_apparent = g2.windvane.get_apparent_wind_speed();
+        wind_dir_tack = degrees(g2.windvane.get_tack_threshold_wind_dir_rad());
+        current_tack = uint8_t(g2.windvane.get_current_tack());
     }
 
 // @LoggerMessage: SAIL
 // @Description: Sailboat information
 // @Field: TimeUS: Time since system startup
-// @Field: WndDrTru: True wind direction
-// @Field: WndDrApp: Apparent wind direction, in body-frame
-// @Field: WndSpdTru: True wind speed
-// @Field: WndSpdApp: Apparent wind Speed
-// @Field: MainOut: Normalized mainsail output 
+// @Field: Tack: Current tack, 0 = port, 1 = starboard
+// @Field: TackThr: Apparent wind angle used for tack threshold
+// @Field: MainOut: Normalized mainsail output
 // @Field: WingOut: Normalized wingsail output
+// @Field: MastRotOut: Normalized direct-rotation mast output
 // @Field: VMG: Velocity made good (speed at which vehicle is making progress directly towards destination)
 
-    logger.Write("SAIL", "TimeUS,WndDrTru,WndDrApp,WndSpdTru,WndSpdApp,MainOut,WingOut,VMG",
-                        "shhnn%%n", "F0000000", "Qfffffff",
+    logger.Write("SAIL", "TimeUS,Tack,TackThr,MainOut,WingOut,MastRotOut,VMG",
+                        "s-d%%%n", "F000000", "QBfffff",
                         AP_HAL::micros64(),
-                        (double)wind_dir_abs,
-                        (double)wind_dir_rel,
-                        (double)wind_speed_true,
-                        (double)wind_speed_apparent,
+                        current_tack,
+                        (double)wind_dir_tack,
                         (double)g2.motors.get_mainsail(),
                         (double)g2.motors.get_wingsail(),
+                        (double)g2.motors.get_mast_rotation(),
                         (double)g2.sailboat.get_VMG());
 }
 
@@ -229,7 +225,7 @@ struct PACKED log_Throttle {
     float throttle_out;
     float desired_speed;
     float speed;
-    float accel_y;
+    float accel_x;
 };
 
 // Write a throttle control packet
@@ -245,7 +241,7 @@ void Rover::Log_Write_Throttle()
         throttle_out    : g2.motors.get_throttle(),
         desired_speed   : g2.attitude_control.get_desired_speed(),
         speed           : speed,
-        accel_y         : accel.y
+        accel_x         : accel.x
     };
     logger.WriteBlock(&pkt, sizeof(pkt));
 }
@@ -291,10 +287,10 @@ const LogStructure Rover::log_structure[] = {
 // @Field: ThrOut: Throttle Output 
 // @Field: DesSpeed: Desired speed 
 // @Field: Speed: Actual speed
-// @Field: AccY: Vehicle's acceleration in Y-Axis
+// @Field: AccX: Acceleration
 
     { LOG_THR_MSG, sizeof(log_Throttle),
-      "THR", "Qhffff", "TimeUS,ThrIn,ThrOut,DesSpeed,Speed,AccY", "s--nno", "F--000" },
+      "THR", "Qhffff", "TimeUS,ThrIn,ThrOut,DesSpeed,Speed,AccX", "s--nno", "F--000" },
 
 // @LoggerMessage: NTUN
 // @Description: Navigation Tuning information - e.g. vehicle destination
