@@ -18,6 +18,8 @@
  */
 #include "AP_Airspeed_MS5525.h"
 
+#if AP_AIRSPEED_MS5525_ENABLED
+
 #include <stdio.h>
 #include <utility>
 
@@ -68,7 +70,7 @@ bool AP_Airspeed_MS5525::init()
         if (_address != MS5525_ADDR_AUTO && i != (uint8_t)_address) {
             continue;
         }
-        dev = hal.i2c_mgr->get_device(get_bus(), addresses[i]);
+        dev = hal.i2c_mgr->get_device_ptr(get_bus(), addresses[i]);
         if (!dev) {
             continue;
         }
@@ -298,3 +300,5 @@ bool AP_Airspeed_MS5525::get_temperature(float &_temperature)
     _temperature = temperature;
     return true;
 }
+
+#endif  // AP_AIRSPEED_MS5525_ENABLED

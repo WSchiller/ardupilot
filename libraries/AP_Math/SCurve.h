@@ -36,8 +36,8 @@
  *    velocity: rate of change of position.  aka speed
  *    acceleration: rate of change of speed
  *    jerk: rate of change of acceleration
+ *    snap: rate of change of jerk
  *    jerk time: the time (in seconds) for jerk to increase from zero to its maximum value
- *    jounce: rate of change of jerk
  *    track: 3D path that the vehicle will follow
  *    path: position, velocity, accel and jerk kinematic profile that this library generates
  */
@@ -52,22 +52,22 @@ public:
     // initialise and clear the path
     void init();
 
-    // calculate the segment times for the trigonometric S-Curve path defined by:
-    // tj - duration of the raised cosine jerk profile (aka jerk time)
-    // Jm - maximum value of the raised cosine jerk profile (aka jerk max)
-    // V0 - initial velocity magnitude
-    // Am - maximum constant acceleration
-    // Vm - maximum constant velocity
-    // L - Length of the path
-    // this is an internal function, static for test suite
-    static void calculate_path(float tj, float Jm, float V0, float Am, float Vm, float L, float &Jm_out, float &t2_out, float &t4_out, float &t6_out);
-
     // generate a trigonometric track in 3D space that moves over a straight line
     // between two points defined by the origin and destination
-    void calculate_track(const Vector3f &origin, const Vector3f &destination,
+    void calculate_track(const Vector3p &origin, const Vector3p &destination, float arc_rad,
                          float speed_xy, float speed_up, float speed_down,
-                         float accel_xy, float accel_z,
-                         float jerk_time_sec, float jerk_maximum);
+                         float accel_xy, float accel_z, float accel_c,
+                         float snap_maximum, float jerk_maximum);
+
+    // generate a trigonometric track that follows a circular arc about center_ne
+    // total_angle_rad is the signed swept angle and may exceed 2*pi for multiple turns
+    // climb_d_m is the net change along the down (D) axis, applied linearly over the arc
+    // the arc radius is taken as the distance from origin to center, so the origin lies on the circle
+    void calculate_circle_track(const Vector3p &origin, const Vector2f &center_ne,
+                                float total_angle_rad, float climb_d_m,
+                                float speed_xy, float speed_up, float speed_down,
+                                float accel_xy, float accel_z, float accel_c,
+                                float snap_maximum, float jerk_maximum);
 
     // set maximum velocity and re-calculate the path using these limits
     void set_speed_max(float speed_xy, float speed_up, float speed_down);
@@ -80,28 +80,53 @@ public:
     void set_destination_speed_max(float speed);
 
     // move target location along path from origin to destination
-    // prev_leg and next_leg are the paths before and after this path
-    // wp_radius is max distance from the waypoint at the apex of the turn
-    // fast_waypoint should be true if vehicle will not stop at end of this leg
-    // dt is the time increment the vehicle will move along the path
-    // target_pos should be set to this segment's origin and it will be updated to the current position target
-    // target_vel and target_accel are updated with new targets
-    // returns true if vehicle has passed the apex of the corner
-    bool advance_target_along_track(SCurve &prev_leg, SCurve &next_leg, float wp_radius, bool fast_waypoint, float dt, Vector3f &target_pos, Vector3f &target_vel, Vector3f &target_accel) WARN_IF_UNUSED;
+    // prev_leg and next_leg - the paths before and after this path
+    // wp_radius - max distance from the waypoint at the apex of the turn
+    // accel_corner - max acceleration that the aircraft may use during the corner
+    // fast_waypoint - true if vehicle will not stop at end of this leg
+    // dt - the time increment the vehicle will move along the path
+    // target_pos - set to this segment's origin and it will be updated to the current position target
+    // target_vel and target_accel - updated with new targets
+    // advance_target_along_track returns true if vehicle has passed the apex of the corner
+    bool advance_target_along_track(SCurve &prev_leg, SCurve &next_leg, float wp_radius, float accel_corner, bool fast_waypoint, float dt, Vector3p &target_pos, Vector3f &target_vel, Vector3f &target_accel) WARN_IF_UNUSED;
 
     // time has reached the end of the sequence
     bool finished() const WARN_IF_UNUSED;
 
+    // return the vector from the origin to the destination
+    // (for an arc segment this is the chord between the endpoints, not the path flown)
+    const Vector3f& get_origin_to_destination() const WARN_IF_UNUSED { return seg_delta; };
+
+    // return the angle swept around the arc so far, in radians, unsigned and unwrapped so it
+    // grows past 2*pi on a multi-turn arc.  returns zero for a straight segment
+    float get_arc_angle_covered_rad() const WARN_IF_UNUSED;
+
+    // calculate the segment times for the trigonometric S-Curve path defined by:
+    // Sm - maximum value of the snap profile
+    // Jm - maximum value of the raised cosine jerk profile
+    // V0 - initial velocity magnitude
+    // Am - maximum constant acceleration
+    // Vm - maximum constant velocity
+    // L - Length of the path
+    // tj_out, t2_out, t4_out, t6_out are the segment durations needed to achieve the kinematic path specified by the input variables
+    // this is an internal function, static for test suite
+    static void calculate_path(float Sm, float Jm, float V0, float Am, float Vm, float L, float &Jm_out, float &tj_out, float &t2_out, float &t4_out, float &t6_out);
+
 private:
 
     // increment time and return the position, velocity and acceleration vectors relative to the origin
-    void move_from_pos_vel_accel(float dt, Vector3f &pos, Vector3f &vel, Vector3f &accel);
+    void move_from_pos_vel_accel(float dt, Vector3p &pos, Vector3f &vel, Vector3f &accel);
 
     // increment time and return the position, velocity and acceleration vectors relative to the destination
-    void move_to_pos_vel_accel(float dt, Vector3f &pos, Vector3f &vel, Vector3f &accel);
+    void move_to_pos_vel_accel(float dt, Vector3p &pos, Vector3f &vel, Vector3f &accel);
 
     // return the position, velocity and acceleration vectors relative to the origin at a specified time along the path
-    void move_from_time_pos_vel_accel(float t, Vector3f &pos, Vector3f &vel, Vector3f &accel);
+    void move_from_time_pos_vel_accel(float t, Vector3p &pos, Vector3f &vel, Vector3f &accel);
+
+    // project the straight-line S-curve motion profile onto the active track segment
+    // converts scalar S-curve kinematics (A1, V1, P1) into 3D position, velocity and acceleration
+    // along either a circular arc or straight segment
+    void project_scurve_onto_track(float scurve_A1, float scurve_V1, float scurve_P1, Vector3p &pos, Vector3f &vel, Vector3f &accel);
 
     // get desired maximum speed along track
     float get_speed_along_track() const WARN_IF_UNUSED { return vel_max; }
@@ -109,8 +134,8 @@ private:
     // get desired maximum acceleration along track
     float get_accel_along_track() const WARN_IF_UNUSED { return accel_max; }
 
-    // return the change in position from origin to destination
-    const Vector3f& get_track() const WARN_IF_UNUSED { return track; };
+    // get desired maximum acceleration along track
+    float get_accel_z_max() const WARN_IF_UNUSED { return accel_z_max; }
 
     // return the current time elapsed
     float get_time_elapsed() const WARN_IF_UNUSED { return time; }
@@ -126,6 +151,12 @@ private:
 
     // return true if the sequence is braking to a stop
     bool braking() const WARN_IF_UNUSED;
+
+    // return time offset used to initiate the turn onto leg
+    float time_accel_end() const WARN_IF_UNUSED;
+
+    // return time offset used to initiate the turn from leg
+    float time_decel_start() const WARN_IF_UNUSED;
 
     // increment the internal time
     void advance_time(float dt);
@@ -146,23 +177,34 @@ private:
     void add_segments(float L);
 
     // generate three time segments forming the jerk profile
-    void add_segments_jerk(uint8_t &seg_pnt, float tj, float Jm, float Tcj);
+    void add_segments_jerk(uint8_t &seg_pnt, float Jm, float tj, float Tcj);
 
     // generate constant jerk time segment
-    void add_segment_const_jerk(uint8_t &seg_pnt, float tin, float J0);
+    void add_segment_const_jerk(uint8_t &seg_pnt, float J0, float tin);
 
     // generate increasing jerk magnitude time segment based on a raised cosine profile
-    void add_segment_incr_jerk(uint8_t &seg_pnt, float tj, float Jm);
+    void add_segment_incr_jerk(uint8_t &seg_pnt, float Jm, float tj);
 
     // generate decreasing jerk magnitude time segment based on a raised cosine profile
-    void add_segment_decr_jerk(uint8_t &seg_pnt, float tj, float Jm);
+    void add_segment_decr_jerk(uint8_t &seg_pnt, float Jm, float tj);
 
-    // set speed and acceleration limits for the path
-    // origin and destination are offsets from EKF origin
-    // speed and acceleration parameters are given in horizontal, up and down.
-    void set_kinematic_limits(const Vector3f &origin, const Vector3f &destination,
-                              float speed_xy, float speed_up, float speed_down,
-                              float accel_xy, float accel_z);
+    // extend the constant velocity segment so the deceleration finishes at target_pos
+    void extend_const_vel_to(float target_pos);
+
+    // fill segment[first..last] with zero-delta constant-jerk segments anchored to segment[src]
+    void fill_empty_segments(uint8_t first, uint8_t last, uint8_t src);
+
+    // populate the canonical straight-segment geometry from seg_delta
+    void set_straight_geometry();
+
+    // populate the canonical arc geometry (center relative to origin, radius and signed swept angle)
+    // seg_delta (its vertical component) must already be set
+    void set_arc_geometry(const Vector2f &center_ne_rel, float radius, float angle_rad);
+
+    // build the jerk-limited profile from the already-configured geometry and the given limits
+    void generate_path(float speed_xy, float speed_up, float speed_down,
+                        float accel_xy, float accel_z, float accel_c,
+                        float snap_maximum, float jerk_maximum);
 
     // return true if the curve is valid.  Used to identify and protect against code errors
     bool valid() const WARN_IF_UNUSED;
@@ -183,12 +225,13 @@ private:
     void add_segment(uint8_t &seg_pnt, float end_time, SegmentType seg_type, float jerk_ref, float end_accel, float end_vel, float end_pos);
 
     // members
-    float jerk_time;    // duration of jerk raised cosine time segment
+    float snap_max;     // maximum snap magnitude
     float jerk_max;     // maximum jerk magnitude
     float accel_max;    // maximum acceleration magnitude
+    float accel_c_max;  // maximum cornering acceleration magnitude
+    float accel_z_max;  // maximum acceleration magnitude
     float vel_max;      // maximum velocity magnitude
     float time;         // time that defines position on the path
-    float position_sq;  // position (squared) on the path at the last time step (used to detect finish)
 
     // segment 0 is the initial segment and holds the vehicle's initial position and velocity
     // segments 1 to 7 are the acceleration segments
@@ -207,6 +250,14 @@ private:
         float end_pos;      // final position value for segment
     } segment[segments_max];
 
-    Vector3f track;       // total change in position from origin to destination
-    Vector3f delta_unit;  // reference direction vector for path
+    bool is_arc_segment;    // true if this segment is a circular arc, false if straight line
+    Vector3f seg_delta;     // total displacement vector from start to end point (NED frame)
+    float seg_length;       // 3D scalar length of the path (arc length + vertical component)
+
+    struct {
+        float angle_rad;    // signed central angle of the arc [rad] (+CCW, -CW), 0 = straight
+        float length_ne;    // horizontal arc length along the circle (R * |theta|)
+        float radius_ne;    // arc radius
+        Vector2f center_ne; // center of the circle in local NE plane, relative to start point
+    } arc;
 };

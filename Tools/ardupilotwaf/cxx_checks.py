@@ -12,6 +12,9 @@
 #
 # You should have received a copy of the GNU General Public License along
 # with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# flake8: noqa
+
 """
 WAF Tool that checks cxx parameters, creating the ap_config.h
 header file.
@@ -146,6 +149,9 @@ def check_librt(cfg, env):
     if cfg.env.DEST_OS == 'darwin':
         return True
 
+    if cfg.env.TOOLCHAIN == 'emscripten':
+        return True
+
     ret = cfg.check(
         compiler='cxx',
         fragment='''
@@ -240,17 +246,6 @@ def check_libiio(cfg, env):
         return False
 
     return check_package(cfg, env, 'libiio')
-
-@conf
-def check_libdl(cfg, env):
-    if cfg.env.STATIC_LINKING:
-        # using loadable modules for a static build is not recommended
-        cfg.msg("Checking for 'libdl':", 'disabled for static build', color='YELLOW')
-        return False
-    ret = cfg.check(compiler='cxx', lib='dl', mandatory=False, global_define=True, define_name='HAVE_LIBDL')
-    if ret:
-        env.LIB += cfg.env['LIB_DL']
-    return ret
 
 @conf
 def check_SFML(cfg, env):

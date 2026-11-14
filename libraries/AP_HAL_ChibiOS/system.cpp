@@ -23,12 +23,18 @@
 #include "hwdef/common/watchdog.h"
 #include "hwdef/common/stm32_util.h"
 #include <AP_Vehicle/AP_Vehicle_Type.h>
-#if HAL_CRASHDUMP_ENABLE
-#include <CrashCatcher.h>
+#if AP_CRASHDUMP_ENABLED
+#include "CrashCatcher.h"
 #endif
 #include <ch.h>
 #include "hal.h"
 #include <hrt.h>
+
+// we rely on systimestamp_t for 64 bit timestamps
+static_assert(sizeof(uint64_t) == sizeof(systimestamp_t), "unexpected systimestamp_t size");
+
+#define STR(x) #x
+#define XSTR(x) STR(x)
 
 #if CH_CFG_ST_RESOLUTION == 16
 static_assert(sizeof(systime_t) == 2, "expected 16 bit systime_t");
@@ -39,12 +45,39 @@ static_assert(sizeof(systime_t) == sizeof(sysinterval_t), "expected systime_t sa
 
 #if defined(HAL_EXPECTED_SYSCLOCK)
 #ifdef STM32_SYS_CK
-static_assert(HAL_EXPECTED_SYSCLOCK == STM32_SYS_CK, "unexpected STM32_SYS_CK value");
+static_assert(HAL_EXPECTED_SYSCLOCK == STM32_SYS_CK, "unexpected STM32_SYS_CK value got " XSTR(STM32_HCLK) " expected " XSTR(HAL_EXPECTED_SYSCLOCK));
 #elif defined(STM32_HCLK)
-static_assert(HAL_EXPECTED_SYSCLOCK == STM32_HCLK, "unexpected STM32_HCLK value");
+static_assert(HAL_EXPECTED_SYSCLOCK == STM32_HCLK, "unexpected STM32_HCLK value got " XSTR(STM32_HCLK) " expected " XSTR(HAL_EXPECTED_SYSCLOCK));
 #else
 #error "unknown system clock"
 #endif
+#endif
+
+// debug variables chew up flash, but are handy if you've got a Fault and need
+// easy access to the fault data iun the debugger:
+#ifndef AP_FAULTHANDLER_DEBUG_VARIABLES_ENABLED
+#define AP_FAULTHANDLER_DEBUG_VARIABLES_ENABLED 1
+#endif
+
+#define QUOTE1(str) #str
+#define QUOTE2(str) QUOTE1(str)
+#define EXPAND_AND_QUOTE(str) QUOTE2(str)
+#define ASSERT_CLOCK(clk) static_assert(HAL_EXPECTED_ ##clk == (clk), "unexpected " #clk " value: '" EXPAND_AND_QUOTE(clk) "'")
+
+#if defined(HAL_EXPECTED_STM32_SYS_CK) && defined(STM32_SYS_CK)
+ASSERT_CLOCK(STM32_SYS_CK);
+#endif
+#if defined(HAL_EXPECTED_STM32_HCLK) && defined(STM32_HCLK)
+ASSERT_CLOCK(STM32_HCLK);
+#endif
+#if defined(HAL_EXPECTED_STM32_SDMMC1CLK) && defined(STM32_SDMMC1CLK)
+ASSERT_CLOCK(STM32_SDMMC1CLK);
+#endif
+#if defined(HAL_EXPECTED_STM32_SPI45CLK) && defined(STM32_SPI45CLK)
+ASSERT_CLOCK(STM32_SPI45CLK);
+#endif
+#if defined(HAL_EXPECTED_STM32_FDCANCLK) && defined(STM32_FDCANCLK)
+ASSERT_CLOCK(STM32_FDCANCLK);
 #endif
 
 extern const AP_HAL::HAL& hal;
@@ -52,7 +85,14 @@ extern "C"
 {
 #define bkpt() __asm volatile("BKPT #0\n")
 
-#if !HAL_CRASHDUMP_ENABLE
+#if AP_USB_DEBUG_ENABLED
+#define HardFault_Handler AP_HardFault_Handler
+#define BusFault_Handler AP_BusFault_Handler
+#define UsageFault_Handler AP_UsageFault_Handler
+#define MemManage_Handler AP_MemManage_Handler
+#endif
+
+#if !AP_CRASHDUMP_ENABLED
 // do legacy hardfault handling
 void HardFault_Handler(void);
 void HardFault_Handler(void) {
@@ -67,6 +107,7 @@ void HardFault_Handler(void) {
     //For HardFault/BusFault this is the address that was accessed causing the error
     uint32_t faultAddress = SCB->BFAR;
     (void)faultAddress;
+#if AP_FAULTHANDLER_DEBUG_VARIABLES_ENABLED
     bool forced = SCB->HFSR & SCB_HFSR_FORCED_Msk;
     (void)forced;
     uint32_t cfsr = SCB->CFSR;
@@ -83,8 +124,11 @@ void HardFault_Handler(void) {
     (void)isFaultOnUnstacking;
     (void)isFaultOnStacking;
     (void)isFaultAddressValid;
+#endif  // #if AP_FAULTHANDLER_DEBUG_VARIABLES_ENABLED
 
+#if AP_WATCHDOG_SAVE_FAULT_ENABLED
     save_fault_watchdog(__LINE__, faultType, faultAddress, (uint32_t)ctx.lr_thd);
+#endif
 
 #ifdef HAL_GPIO_PIN_FAULT
     while (true) {
@@ -97,9 +141,9 @@ void HardFault_Handler(void) {
             fault_printf("HARDFAULT(%d)\n", int(faultType));
         }
         fault_printf("CSFR=0x%08x\n", cfsr);
-        fault_printf("CUR=0x%08x\n", ch.rlist.current);
-        if (ch.rlist.current) {
-            fault_printf("NAME=%s\n", ch.rlist.current->name);
+        fault_printf("CUR=0x%08x\n", currcore->rlist.current);
+        if (currcore->rlist.current) {
+            fault_printf("NAME=%s\n", currcore->rlist.current->name);
         }
         fault_printf("FA=0x%08x\n", faultAddress);
         fault_printf("PC=0x%08x\n", ctx.pc);
@@ -119,7 +163,11 @@ void HardFault_Handler(void) {
 
 // For the BusFault handler to be active SCB_SHCSR_BUSFAULTENA_Msk should be set in SCB->SHCSR
 // ChibiOS does not do this by default
+#if AP_USB_DEBUG_ENABLED
+void BusFault_Handler(void) __attribute__((alias("AP_HardFault_Handler")));
+#else
 void BusFault_Handler(void) __attribute__((alias("HardFault_Handler")));
+#endif
 
 void UsageFault_Handler(void);
 void UsageFault_Handler(void) {
@@ -132,6 +180,8 @@ void UsageFault_Handler(void) {
     FaultType faultType = (FaultType)__get_IPSR();
     (void)faultType;
     uint32_t faultAddress = SCB->BFAR;
+    (void)faultAddress;
+#if AP_FAULTHANDLER_DEBUG_VARIABLES_ENABLED
     //Flags about hardfault / busfault
     //See http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0552a/Cihdjcfc.html for reference
     bool isUndefinedInstructionFault = ((SCB->CFSR >> SCB_CFSR_USGFAULTSR_Pos) & (1 << 0) ? true : false);
@@ -146,15 +196,24 @@ void UsageFault_Handler(void) {
     (void)isNoCoprocessorFault;
     (void)isUnalignedAccessFault;
     (void)isDivideByZeroFault;
+#endif  // AP_FAULTHANDLER_DEBUG_VARIABLES_ENABLED
 
+#if AP_WATCHDOG_SAVE_FAULT_ENABLED
     save_fault_watchdog(__LINE__, faultType, faultAddress, (uint32_t)ctx.lr_thd);
+#endif
 
     //Cause debugger to stop. Ignored if no debugger is attached
     while(1) {}
 }
 
+#if AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED
+// the trace handler falls through to this for faults it can't recover from
+void MemManage_Handler_default(void);
+void MemManage_Handler_default(void) {
+#else
 void MemManage_Handler(void);
 void MemManage_Handler(void) {
+#endif
     //Copy to local variables (not pointers) to allow GDB "i loc" to directly show the info
     //Get thread context. Contains main registers including PC and LR
     struct port_extctx ctx;
@@ -166,6 +225,7 @@ void MemManage_Handler(void) {
     //For HardFault/BusFault this is the address that was accessed causing the error
     uint32_t faultAddress = SCB->MMFAR;
     (void)faultAddress;
+#if AP_FAULTHANDLER_DEBUG_VARIABLES_ENABLED
     //Flags about hardfault / busfault
     //See http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0552a/Cihdjcfc.html for reference
     bool isInstructionAccessViolation = ((SCB->CFSR >> SCB_CFSR_MEMFAULTSR_Pos) & (1 << 0) ? true : false);
@@ -178,8 +238,11 @@ void MemManage_Handler(void) {
     (void)isExceptionUnstackingFault;
     (void)isExceptionStackingFault;
     (void)isFaultAddressValid;
+#endif  // AP_FAULTHANDLER_DEBUG_VARIABLES_ENABLED
 
+#if AP_WATCHDOG_SAVE_FAULT_ENABLED
     save_fault_watchdog(__LINE__, faultType, faultAddress, (uint32_t)ctx.lr_thd);
+#endif
 
     while(1) {}
 }
@@ -197,17 +260,53 @@ void UsageFault_Handler(void) {
     HardFault_Handler();
 }
 
+#if !AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED
 void MemManage_Handler(void);
 void MemManage_Handler(void) {
     HardFault_Handler();
 }
 #endif
+#endif
+
+#if AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED
+/*
+  intercept MemManage to trap accesses to the reserved first 1k. This must be
+  naked: r4-r11 are not stacked by hardware, and on the fallback path we have to
+  reach the fatal handler with MSP, PSP and LR exactly as the hardware left them
+ */
+#if AP_CRASHDUMP_ENABLED
+#define MEMPROTECT_FALLBACK "HardFault_Handler"
+#else
+#define MEMPROTECT_FALLBACK "MemManage_Handler_default"
+#endif
+
+void MemManage_Handler(void) __attribute__((naked));
+void MemManage_Handler(void)
+{
+    __asm__ volatile (
+        "   tst     lr, #4                  \n" // EXC_RETURN[2]: 0=MSP, 1=PSP
+        "   ite     eq                      \n"
+        "   mrseq   r0, msp                 \n"
+        "   mrsne   r0, psp                 \n"
+        "   mov     r1, lr                  \n"
+        "   push    {r0, lr}                \n" // r0 is filler, keeps 8 byte alignment
+        "   bl      memprotect_handle_fault \n"
+        "   pop     {r1, lr}                \n"
+        "   cmp     r0, #0                  \n"
+        "   it      ne                      \n"
+        "   bxne    lr                      \n" // recovered, retry the access
+        "   b       " MEMPROTECT_FALLBACK "  \n"
+    );
+}
+#endif  // AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED
+
+
+#if AP_WATCHDOG_SAVE_FAULT_ENABLED
 /*
   save watchdog data for a hard fault
  */
 void save_fault_watchdog(uint16_t line, FaultType fault_type, uint32_t fault_addr, uint32_t lr)
 {
-#ifndef HAL_BOOTLOADER_BUILD
     bool using_watchdog = AP_BoardConfig::watchdog_enabled();
     if (using_watchdog) {
         AP_HAL::Util::PersistentData &pd = hal.util->persistent_data;
@@ -229,8 +328,8 @@ void save_fault_watchdog(uint16_t line, FaultType fault_type, uint32_t fault_add
         }
         stm32_watchdog_save((uint32_t *)&hal.util->persistent_data, (sizeof(hal.util->persistent_data)+3)/4);
     }
-#endif
 }
+#endif  // AP_WATCHDOG_SAVE_FAULT_ENABLED
 
 void *__dso_handle;
 
@@ -239,6 +338,35 @@ void __cxa_pure_virtual() { while (1); } //TODO: Handle properly, maybe generate
 
 void NMI_Handler(void);
 void NMI_Handler(void) { while (1); }
+
+#if defined(HAL_BOOTLOADER_BUILD) && HAL_ENABLE_DFU_BOOT
+void __entry_hook(void);
+void __entry_hook()
+{
+    // read the persistent data
+    AP_HAL::Util::PersistentData pd;
+    stm32_watchdog_load((uint32_t *)&pd, (sizeof(pd)+3)/4);
+    if (pd.boot_to_dfu) {
+        pd.boot_to_dfu = false;
+        stm32_watchdog_save((uint32_t *)&pd, (sizeof(pd)+3)/4);
+#if defined(STM32H7)
+        const uint32_t *app_base = (const uint32_t *)(0x1FF09800); 
+#else
+        const uint32_t *app_base = (const uint32_t *)(0x1FFF0000);
+#endif
+        __set_MSP(*app_base);
+        ((void (*)())*(&app_base[1]))();
+        while(true);
+    }
+}
+#endif
+
+uint32_t chibios_rand_generate()
+{
+    uint32_t val;
+    hal.util->get_random_vals((uint8_t*)&val, sizeof(val));
+    return val;
+}
 
 }
 namespace AP_HAL {
@@ -253,16 +381,14 @@ void panic(const char *errormsg, ...)
     INTERNAL_ERROR(AP_InternalError::error_t::panic);
     va_list ap;
 
-    va_start(ap, errormsg);
-    vprintf(errormsg, ap);
-    va_end(ap);
-
-    hal.scheduler->delay_microseconds(10000);
+    uint16_t delay_ms = 10000;
     while (1) {
         va_start(ap, errormsg);
         vprintf(errormsg, ap);
         va_end(ap);
-        hal.scheduler->delay(500);
+        printf("\n");
+        hal.scheduler->delay(delay_ms);
+        delay_ms = 500;
     }
 #else
     // we don't support variable args in bootlaoder
@@ -272,11 +398,15 @@ void panic(const char *errormsg, ...)
 #endif
 }
 
-uint32_t micros()
+__FASTRAMFUNC__ uint32_t micros()
 {
 #if CH_CFG_ST_RESOLUTION == 32 && CH_CFG_ST_FREQUENCY==1000000U
     // special case optimisation for 32 bit timers
+#ifdef AP_BOARD_START_TIME
+    return st_lld_get_counter() + AP_BOARD_START_TIME;
+#else
     return st_lld_get_counter();
+#endif
 #else
     return hrt_micros32();
 #endif
@@ -293,50 +423,24 @@ uint16_t micros16()
 #endif
 }
     
-uint32_t millis()
+__FASTRAMFUNC__ uint32_t millis()
 {
     return hrt_millis32();
 }
 
-uint16_t millis16()
+__FASTRAMFUNC__ uint16_t millis16()
 {
     return hrt_millis32() & 0xFFFF;
 }
 
-uint64_t micros64()
+__FASTRAMFUNC__ uint64_t micros64()
 {
     return hrt_micros64();
 }
 
-uint64_t millis64()
+__FASTRAMFUNC__ uint64_t millis64()
 {
-    return hrt_micros64() / 1000U;
-}
-
-
-uint32_t native_micros()
-{
-    return micros();
-}
-
-uint32_t native_millis()
-{
-    return millis();
-}
-
-uint16_t native_millis16()
-{
-    return millis16();
-}
-
-uint64_t native_micros64()
-{
-    return micros64();
-}
-
-uint64_t native_millis64()
-{
-    return millis64();
+    return hrt_millis64();
 }
 
 

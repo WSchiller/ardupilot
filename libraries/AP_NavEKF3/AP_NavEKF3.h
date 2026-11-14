@@ -22,7 +22,6 @@
 #include <AP_Common/Location.h>
 #include <AP_Math/AP_Math.h>
 #include <AP_Param/AP_Param.h>
-#include <GCS_MAVLink/GCS_MAVLink.h>
 #include <AP_NavEKF/AP_Nav_Common.h>
 #include <AP_NavEKF/AP_NavEKF_Source.h>
 
@@ -36,8 +35,7 @@ public:
     NavEKF3();
 
     /* Do not allow copies */
-    NavEKF3(const NavEKF3 &other) = delete;
-    NavEKF3 &operator=(const NavEKF3&) = delete;
+    CLASS_NO_COPY(NavEKF3);
 
     static const struct AP_Param::GroupInfo var_info[];
     static const struct AP_Param::GroupInfo var_info2[];
@@ -68,32 +66,31 @@ public:
     // return -1 if no primary core selected
     int8_t getPrimaryCoreIMUIndex(void) const;
 
-    // Write the last calculated NE position relative to the reference point (m) for the specified instance.
-    // An out of range instance (eg -1) returns data for the primary instance
+    // Write the last calculated NE position relative to the reference point (m)
     // If a calculated solution is not available, use the best available data and return false
     // If false returned, do not use for flight control
-    bool getPosNE(int8_t instance, Vector2f &posNE) const;
+    bool getPosNE(Vector2p &posNE) const;
 
-    // Write the last calculated D position relative to the reference point (m) for the specified instance.
-    // An out of range instance (eg -1) returns data for the primary instance
+    // Write the last calculated D position relative to the reference point (m)
     // If a calculated solution is not available, use the best available data and return false
     // If false returned, do not use for flight control
-    bool getPosD(int8_t instance, float &posD) const;
+    bool getPosD(postype_t &posD) const;
 
-    // return NED velocity in m/s for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
-    void getVelNED(int8_t instance, Vector3f &vel) const;
+    // return NED velocity in m/s
+    void getVelNED(Vector3f &vel) const;
 
-    // return estimate of true airspeed vector in body frame in m/s for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
+    // return estimate of true airspeed vector in body frame in m/s
     // returns false if estimate is unavailable
-    bool getAirSpdVec(int8_t instance, Vector3f &vel) const;
+    bool getAirSpdVec(Vector3f &vel) const;
 
-    // Return the rate of change of vertical position in the down direction (dPosD/dt) in m/s for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
+    // return the innovation in m/s, innovation variance in (m/s)^2 and age in msec of the last TAS measurement processed for a given sensor instance
+    // returns false if the data is unavailable
+    bool getAirSpdHealthData(uint8_t instance, float &innovation, float &innovationVariance, uint32_t &age_ms) const;
+
+    // Return the rate of change of vertical position in the down direction (dPosD/dt) in m/s
     // This can be different to the z component of the EKF velocity state because it will fluctuate with height errors and corrections in the EKF
     // but will always be kinematically consistent with the z component of the EKF position state
-    float getPosDownDerivative(int8_t instance) const;
+    float getPosDownDerivative() const;
 
     // return body axis gyro bias estimates in rad/sec for the specified instance
     // An out of range instance (eg -1) returns data for the primary instance
@@ -102,6 +99,9 @@ public:
     // return accelerometer bias estimate in m/s/s
     // An out of range instance (eg -1) returns data for the primary instance
     void getAccelBias(int8_t instance, Vector3f &accelBias) const;
+
+    //returns index of the active source set used
+    uint8_t get_active_source_set() const;
 
     // reset body axis gyro bias estimates
     void resetGyroBias(void);
@@ -117,22 +117,19 @@ public:
     // return the scale factor to be applied to navigation velocity gains to compensate for increase in velocity noise with height when using optical flow
     void getEkfControlLimits(float &ekfGndSpdLimit, float &ekfNavVelGainScaler) const;
 
-    // return the NED wind speed estimates in m/s (positive is air moving in the direction of the axis)
-    // An out of range instance (eg -1) returns data for the the primary instance
-    // returns true if wind state estimation is active
-    bool getWind(int8_t instance, Vector3f &wind) const;
+    // return the NED wind speed estimates in m/s (positive is air
+    // moving in the direction of the axis) returns true if wind state
+    // estimation is active
+    bool getWind(Vector3f &wind) const;
 
-    // return earth magnetic field estimates in measurement units / 1000 for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
-    void getMagNED(int8_t instance, Vector3f &magNED) const;
+    // return earth magnetic field estimates in measurement units / 1000
+    void getMagNED(Vector3f &magNED) const;
 
-    // return body magnetic field estimates in measurement units / 1000 for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
-    void getMagXYZ(int8_t instance, Vector3f &magXYZ) const;
+    // return body magnetic field estimates in measurement units / 1000
+    void getMagXYZ(Vector3f &magXYZ) const;
 
-    // return the sensor in use for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
-    uint8_t getActiveAirspeed(int8_t instance) const;
+    // return the airspeed sensor in use
+    uint8_t getActiveAirspeed() const;
 
     // Return estimated magnetometer offsets
     // Return true if magnetometer offsets are valid
@@ -142,13 +139,12 @@ public:
     // If a calculated location isn't available, return a raw GPS measurement
     // The status will return true if a calculation or raw measurement is available
     // The getFilterStatus() function provides a more detailed description of data health and must be checked if data is to be used for flight control
-    bool getLLH(struct Location &loc) const;
+    bool getLLH(Location &loc) const;
 
-    // Return the latitude and longitude and height used to set the NED origin for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
+    // Return the latitude and longitude and height used to set the NED origin
     // All NED positions calculated by the filter are relative to this location
     // Returns false if the origin has not been set
-    bool getOriginLLH(int8_t instance, struct Location &loc) const;
+    bool getOriginLLH(Location &loc) const;
 
     // set the latitude and longitude and height used to set the NED origin
     // All NED positions calculated by the filter will be relative to this location
@@ -156,13 +152,17 @@ public:
     // Returns false if the filter has rejected the attempt to set the origin
     bool setOriginLLH(const Location &loc);
 
+    // Set the EKF's NE horizontal position states and their corresponding variances from a supplied WGS-84 location and uncertainty
+    // The altitude element of the location is not used.
+    // Returns true if the set was successful
+    bool setLatLng(const Location &loc, float posErr, uint32_t timestamp_ms);
+
     // return estimated height above ground level
     // return false if ground height is not being estimated.
     bool getHAGL(float &HAGL) const;
 
-    // return the Euler roll, pitch and yaw angle in radians for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
-    void getEulerAngles(int8_t instance, Vector3f &eulers) const;
+    // return the Euler roll, pitch and yaw angle in radians
+    void getEulerAngles(Vector3f &eulers) const;
 
     // return the transformation matrix from XYZ (body) to NED axes
     void getRotationBodyToNED(Matrix3f &mat) const;
@@ -171,19 +171,20 @@ public:
     void getQuaternionBodyToNED(int8_t instance, Quaternion &quat) const;
 
     // return the quaternions defining the rotation from NED to XYZ (autopilot) axes
-    void getQuaternion(int8_t instance, Quaternion &quat) const;
+    void getQuaternion(Quaternion &quat) const;
 
-    // return the innovations for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
-    bool getInnovations(int8_t index, Vector3f &velInnov, Vector3f &posInnov, Vector3f &magInnov, float &tasInnov, float &yawInnov) const;
+    // return the innovations
+    bool getInnovations(Vector3f &velInnov, Vector3f &posInnov, Vector3f &magInnov, float &tasInnov, float &yawInnov) const;
 
-    // return the innovation consistency test ratios for the specified instance
-    // An out of range instance (eg -1) returns data for the primary instance
-    bool getVariances(int8_t instance, float &velVar, float &posVar, float &hgtVar, Vector3f &magVar, float &tasVar, Vector2f &offset) const;
+    // return the innovation consistency test ratios
+    bool getVariances(float &velVar, float &posVar, float &hgtVar, Vector3f &magVar, float &tasVar, Vector2f &offset) const;
 
-    // get a source's velocity innovations for the specified instance.  Set instance to -1 for the primary instance
+    // return 1-sigma position and velocity uncertainty from the EKF state error covariance matrix P
+    bool getPosVelUncertainty(float &pos_horiz_m, float &pos_vert_m, float &vel_m_s) const;
+
+    // get a source's velocity innovations
     // returns true on success and results are placed in innovations and variances arguments
-    bool getVelInnovationsAndVariancesForSource(int8_t instance, AP_NavEKF_Source::SourceXY source, Vector3f &innovations, Vector3f &variances) const WARN_IF_UNUSED;
+    bool getVelInnovationsAndVariancesForSource(AP_NavEKF_Source::SourceXY source, Vector3f &innovations, Vector3f &variances) const WARN_IF_UNUSED;
 
     // should we use the compass? This is public so it can be used for
     // reporting via ahrs.use_compass()
@@ -196,7 +197,11 @@ public:
     // The sign convention is that a RH physical rotation of the sensor about an axis produces both a positive flow and gyro rate
     // msecFlowMeas is the scheduler time in msec when the optical flow data was received from the sensor.
     // posOffset is the XYZ flow sensor position in the body frame in m
-    void writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f &rawFlowRates, const Vector2f &rawGyroRates, const uint32_t msecFlowMeas, const Vector3f &posOffset);
+    // heightOverride is the fixed height of the sensor above ground in m, when on rover vehicles. 0 if not used
+    void writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f &rawFlowRates, const Vector2f &rawGyroRates, const uint32_t msecFlowMeas, const Vector3f &posOffset, float heightOverride);
+
+    // retrieve latest corrected optical flow samples (used for calibration)
+    bool getOptFlowSample(uint32_t& timeStamp_ms, Vector2f& flowRate, Vector2f& bodyRate, Vector2f& losPred) const;
 
     /*
      * Write body frame linear and angular displacement measurements from a visual odometry sensor
@@ -241,7 +246,7 @@ public:
      * Write position and quaternion data from an external navigation system
      *
      * pos        : position in the RH navigation frame. Frame is assumed to be NED if frameIsNED is true. (m)
-     * quat       : quaternion desribing the the rotation from navigation frame to body frame
+     * quat       : quaternion desribing the rotation from navigation frame to body frame
      * posErr     : 1-sigma spherical position error (m)
      * angErr     : 1-sigma spherical angle error (rad)
      * timeStamp_ms : system time the measurement was taken, not the time it was received (mSec)
@@ -261,6 +266,12 @@ public:
     */
     void writeExtNavVelData(const Vector3f &vel, float err, uint32_t timeStamp_ms, uint16_t delay_ms);
 
+    /*
+     * Write terrain altitude (derived from SRTM) in meters above the origin
+     * only used by optical flow when out of rangefinder range
+     */
+    void writeTerrainData(float alt_m);
+
     // Set to true if the terrain underneath is stable enough to be used as a height reference
     // in combination with a range finder. Set to false if the terrain underneath the vehicle
     // cannot be used as a height reference. Use to prevent range finder operation otherwise
@@ -268,8 +279,7 @@ public:
     void setTerrainHgtStable(bool val);
 
     /*
-    return the filter fault status as a bitmasked integer for the specified instance
-    An out of range instance (eg -1) returns data for the primary instance
+    return the filter fault status as a bitmasked integer
      0 = quaternions are NaN
      1 = velocities are NaN
      2 = badly conditioned X magnetometer fusion
@@ -279,37 +289,32 @@ public:
      6 = badly conditioned synthetic sideslip fusion
      7 = filter is not initialised
     */
-    void getFilterFaults(int8_t instance, uint16_t &faults) const;
+    void getFilterFaults(uint16_t &faults) const;
 
     /*
-    return filter status flags for the specified instance
-    An out of range instance (eg -1) returns data for the primary instance
+    return filter status flags
     */
-    void getFilterStatus(int8_t instance, nav_filter_status &status) const;
+    void getFilterStatus(nav_filter_status &status) const;
 
-    // send an EKF_STATUS_REPORT message to GCS
-    void send_status_report(mavlink_channel_t chan) const;
+    // return a terrain altitude variance
+    bool getTerrainAltVariance(float &terrain_alt_variance) const;
 
     // provides the height limit to be observed by the control loops
     // returns false if no height limiting is required
     // this is needed to ensure the vehicle does not fly too high when using optical flow navigation
     bool getHeightControlLimit(float &height) const;
 
-    // return the amount of yaw angle change (in radians) due to the last yaw angle reset or core selection switch
-    // returns the time of the last yaw angle reset or 0 if no reset has ever occurred
-    uint32_t getLastYawResetAngle(float &yawAngDelta);
+    // return a count of yaw reset events; incremented when the
+    // primary core changes and when the primary core resets its yaw
+    uint16_t getYawResetCount(void);
 
-    // return the amount of NE position change due to the last position reset in metres
-    // returns the time of the last reset or 0 if no reset has ever occurred
-    uint32_t getLastPosNorthEastReset(Vector2f &posDelta);
+    // return a count of NE position reset events; incremented when the
+    // primary core changes and when the primary core resets its NE position
+    uint16_t getPosNorthEastResetCount(void);
 
-    // return the amount of NE velocity change due to the last velocity reset in metres/sec
-    // returns the time of the last reset or 0 if no reset has ever occurred
-    uint32_t getLastVelNorthEastReset(Vector2f &vel) const;
-
-    // return the amount of vertical position change due to the last reset in metres
-    // returns the time of the last reset or 0 if no reset has ever occurred
-    uint32_t getLastPosDownReset(float &posDelta);
+    // return a count of D position reset events; incremented when the
+    // primary core changes and when the primary core resets its D position
+    uint16_t getPosDownResetCount(void);
 
     // set and save the _baroAltNoise parameter
     void set_baro_alt_noise(float noise) { _baroAltNoise.set_and_save(noise); };
@@ -317,6 +322,9 @@ public:
     // allow the enable flag to be set by Replay
     void set_enable(bool enable) { _enable.set_enable(enable); }
 
+    // get the enable parameter
+    bool get_enable(void) const { return bool(_enable.get()); }
+    
     /*
       check if switching lanes will reduce the normalised
       innovations. This is called when the vehicle code is about to
@@ -324,6 +332,9 @@ public:
       using a different EKF lane
      */
     void checkLaneSwitch(void);
+
+    // switch to a new lane
+    void switchLane(uint8_t new_lane_index);
 
     /*
       Request a reset of the EKF yaw. This is called when the vehicle code is about to
@@ -343,33 +354,50 @@ public:
     // are we using (aka fusing) external nav for yaw?
     bool using_extnav_for_yaw() const;
 
+    // are we using a gps
+    bool using_gps() const;
+
     // check if configured to use GPS for horizontal position estimation
     bool configuredToUseGPSForPosXY(void) const;
     
+    // check if configured to use GPS for position estimation
+    bool configuredToUseGPSForPos(void) const;
+
     // Writes the default equivalent airspeed and 1-sigma uncertainty in m/s to be used in forward flight if a measured airspeed is required and not available.
     void writeDefaultAirSpeed(float airspeed, float uncertainty);
-
-    // parameter conversion
-    void convert_parameters();
 
     // returns true when the yaw angle has been aligned
     bool yawAlignmentComplete(void) const;
 
-    // returns true when the state estimates for the selected core are significantly degraded by vibration
-    // if instance < 0, the primary instance will be used
-    bool isVibrationAffected(int8_t instance) const;
+    // returns true when the state estimates are significantly
+    // degraded by vibration
+    bool isVibrationAffected() const;
 
     // get a yaw estimator instance
     const EKFGSF_yaw *get_yawEstimator(void) const;
 
+    // Do a reset and bootstrap alignment of all EKF cores
+    // return true if successful for all cores
+    bool InitialiseFilterBootstrap();
+
 private:
+    class AP_DAL &dal;
+
     uint8_t num_cores; // number of allocated cores
     uint8_t primary;   // current primary core
     NavEKF3_core *core = nullptr;
 
     uint32_t _frameTimeUsec;        // time per IMU frame
     uint8_t  _framesPerPrediction;  // expected number of IMU frames per prediction
-    
+  
+    // values for EK3_LOG_LEVEL
+    enum class LogLevel {
+        ALL = 0,
+        XKF4 = 1,
+        XKF4_GSF = 2,
+        NONE = 3
+    };
+
     // EKF Mavlink Tuneable Parameters
     AP_Int8  _enable;               // zero to disable EKF3
     AP_Float _gpsHorizVelNoise;     // GPS horizontal velocity measurement noise : m/s
@@ -399,9 +427,10 @@ private:
     AP_Int8  _flowDelay_ms;         // effective average delay of optical flow measurements rel to IMU (msec)
     AP_Int16  _rngInnovGate;        // Percentage number of standard deviations applied to range finder innovation consistency check
     AP_Float _maxFlowRate;          // Maximum flow rate magnitude that will be accepted by the filter
+    AP_Float _flowNavGainHgt;       // height (m) up to which the optical-flow nav velocity gain is full scale
     AP_Float _rngNoise;             // Range finder noise : m
-    AP_Int8 _gpsCheck;              // Bitmask controlling which preflight GPS checks are bypassed
-    AP_Int8 _imuMask;               // Bitmask of IMUs to instantiate EKF3 for
+    AP_UInt8 _gpsCheck;              // Bitmask controlling which preflight GPS checks are bypassed
+    AP_UInt8 _imuMask;               // Bitmask of IMUs to instantiate EKF3 for
     AP_Int16 _gpsCheckScaler;       // Percentage increase to be applied to GPS pre-flight accuracy and drift thresholds
     AP_Float _noaidHorizNoise;      // horizontal position measurement noise assumed when synthesised zero position measurements are used to constrain attitude drift : m
     AP_Float _yawNoise;             // magnetic yaw measurement noise : rad
@@ -414,27 +443,41 @@ private:
     AP_Int8  _rngBcnDelay_ms;       // effective average delay of range beacon measurements rel to IMU (msec)
     AP_Float _useRngSwSpd;          // Maximum horizontal ground speed to use range finder as the primary height source (m/s)
     AP_Float _accBiasLim;           // Accelerometer bias limit (m/s/s)
-    AP_Int8 _magMask;               // Bitmask forcing specific EKF core instances to use simple heading magnetometer fusion.
-    AP_Int8 _originHgtMode;         // Bitmask controlling post alignment correction and reporting of the EKF origin height.
+    AP_UInt8 _magMask;               // Bitmask forcing specific EKF core instances to use simple heading magnetometer fusion.
+    AP_UInt8 _originHgtMode;         // Bitmask controlling post alignment correction and reporting of the EKF origin height.
     AP_Float _visOdmVelErrMax;      // Observation 1-STD velocity error assumed for visual odometry sensor at lowest reported quality (m/s)
     AP_Float _visOdmVelErrMin;      // Observation 1-STD velocity error assumed for visual odometry sensor at highest reported quality (m/s)
     AP_Float _wencOdmVelErr;        // Observation 1-STD velocity error assumed for wheel odometry sensor (m/s)
     AP_Int8  _flowUse;              // Controls if the optical flow data is fused into the main navigation estimator and/or the terrain estimator.
     AP_Float _hrt_filt_freq;        // frequency of output observer height rate complementary filter in Hz
     AP_Int16 _mag_ef_limit;         // limit on difference between WMM tables and learned earth field.
-    AP_Int8 _gsfRunMask;            // mask controlling which EKF3 instances run a separate EKF-GSF yaw estimator
-    AP_Int8 _gsfUseMask;            // mask controlling which EKF3 instances will use EKF-GSF yaw estimator data to assit with yaw resets
+    AP_UInt8 _gsfRunMask;            // mask controlling which EKF3 instances run a separate EKF-GSF yaw estimator
+    AP_UInt8 _gsfUseMask;            // mask controlling which EKF3 instances will use EKF-GSF yaw estimator data to assit with yaw resets
     AP_Int8 _gsfResetMaxCount;      // maximum number of times the EKF3 is allowed to reset it's yaw to the EKF-GSF estimate
     AP_Float _err_thresh;           // lanes have to be consistently better than the primary by at least this threshold to reduce their overall relativeCoreError
-    AP_Int32 _affinity;             // bitmask of sensor affinity options
+    AP_UInt32 _affinity;             // bitmask of sensor affinity options
     AP_Float _dragObsNoise;         // drag specific force observatoin noise (m/s/s)**2
     AP_Float _ballisticCoef_x;      // ballistic coefficient measured for flow in X body frame directions
     AP_Float _ballisticCoef_y;      // ballistic coefficient measured for flow in Y body frame directions
     AP_Float _momentumDragCoef;     // lift rotor momentum drag coefficient
-    AP_Int8 _betaMask;              // Bitmask controlling when sideslip angle fusion is used to estimate non wind states
+    AP_UInt8 _betaMask;              // Bitmask controlling when sideslip angle fusion is used to estimate non wind states
     AP_Float _ognmTestScaleFactor;  // Scale factor applied to the thresholds used by the on ground not moving test
     AP_Float _baroGndEffectDeadZone;// Dead zone applied to positive baro height innovations when in ground effect (m)
-    AP_Int8 _primary_core;          // initial core number
+    AP_UInt8 _primary_core;          // initial core number
+    AP_Enum<LogLevel> _log_level;   // log verbosity level
+    AP_Float _gpsVAccThreshold;     // vertical accuracy threshold to use GPS as an altitude source
+    AP_UInt32 _options;              // bit mask of processing options
+
+    // enum for processing options
+    enum class Option {
+        JammingExpected         = (1<<0),
+        ManualLaneSwitch        = (1<<1),
+        OptflowMayUseTerrainAlt = (1<<2),
+        AglKfForOptflow         = (1<<3),  // Use IMU-aided 2-state AGL KF for optflow scaling
+    };
+    bool option_is_enabled(Option option) const {
+        return (_options & (uint32_t)option) != 0;
+    }
 
 // Possible values for _flowUse
 #define FLOW_USE_NONE    0
@@ -454,6 +497,7 @@ private:
     const uint16_t hgtRetryTimeMode0_ms = 10000;   // Height retry time with vertical velocity measurement (msec)
     const uint16_t hgtRetryTimeMode12_ms = 5000;   // Height retry time without vertical velocity measurement (msec)
     const uint16_t tasRetryTime_ms = 5000;         // True airspeed timeout and retry interval (msec)
+    const uint16_t dragFailTimeLimit_ms = 5000;    // Drag timeout (msec)
     const uint32_t magFailTimeLimit_ms = 10000;    // number of msec before a magnetometer failing innovation consistency checks is declared failed (msec)
     const float magVarRateScale = 0.005f;          // scale factor applied to magnetometer variance due to angular rate
     const float gyroBiasNoiseScaler = 2.0f;        // scale factor applied to gyro bias state process noise when on ground
@@ -472,7 +516,8 @@ private:
     const uint8_t flowIntervalMin_ms = 20;         // The minimum allowed time between measurements from optical flow sensors (msec)
     const uint8_t extNavIntervalMin_ms = 20;       // The minimum allowed time between measurements from external navigation sensors (msec)
     const float maxYawEstVelInnov = 2.0f;          // Maximum acceptable length of the velocity innovation returned by the EKF-GSF yaw estimator (m/s)
-    const uint16_t deadReckonDeclare_ms = 1000;    // Time without equivalent position or velocity observation to constrain drift beore dead reckoning is declared (msec)
+    const uint16_t deadReckonDeclare_ms = 1000;    // Time without equivalent position or velocity observation to constrain drift before dead reckoning is declared (msec)
+    const uint16_t gpsNoFixTimeout_ms = 2000;      // Time without a fix required to reset GPS alignment checks when EK3_OPTIONS bit 0 is set (msec)
 
     // time at start of current filter update
     uint64_t imuSampleTime_us;
@@ -484,27 +529,20 @@ private:
     uint64_t lastLogWrite_us;
 
     struct {
-        uint32_t last_function_call;  // last time getLastYawResetAngle was called
-        bool core_changed;            // true when a core change happened and hasn't been consumed, false otherwise
-        uint32_t last_primary_change; // last time a primary has changed
-        float core_delta;             // the amount of yaw change between cores when a change happened
+        uint16_t count;               // count of yaw reset events passed to consumers
+        uint16_t last_core_count;     // primary core's yaw reset count when count last changed
     } yaw_reset_data;
 
     struct {
-        uint32_t last_function_call;  // last time getLastPosNorthEastReset was called
-        bool core_changed;            // true when a core change happened and hasn't been consumed, false otherwise
-        uint32_t last_primary_change; // last time a primary has changed
-        Vector2f core_delta;          // the amount of NE position change between cores when a change happened
+        uint16_t count;               // count of NE position reset events passed to consumers
+        uint16_t last_core_count;     // primary core's NE position reset count when count last changed
     } pos_reset_data;
 
     struct {
-        uint32_t last_function_call;  // last time getLastPosDownReset was called
-        bool core_changed;            // true when a core change happened and hasn't been consumed, false otherwise
-        uint32_t last_primary_change; // last time a primary has changed
-        float core_delta;             // the amount of D position change between cores when a change happened
+        uint16_t count;               // count of D position reset events passed to consumers
+        uint16_t last_core_count;     // primary core's D position reset count when count last changed
     } pos_down_reset_data;
 
-#define MAX_EKF_CORES     3 // maximum allowed EKF Cores to be instantiated
 #define CORE_ERR_LIM      1 // -LIM to LIM relative error range for a core
 #define BETTER_THRESH   0.5 // a lane should have this much relative error difference to be considered for overriding a healthy primary core
     
@@ -516,23 +554,23 @@ private:
     uint64_t coreLastTimePrimary_us[MAX_EKF_CORES]; // last time we were using this core as primary
 
     // origin set by one of the cores
-    struct Location common_EKF_origin;
+    Location common_EKF_origin;
     bool common_origin_valid;
     
     // update the yaw reset data to capture changes due to a lane switch
     // new_primary - index of the ekf instance that we are about to switch to as the primary
     // old_primary - index of the ekf instance that we are currently using as the primary
-    void updateLaneSwitchYawResetData(uint8_t new_primary, uint8_t old_primary);
+    void updateLaneSwitchYawResetData(uint8_t new_primary);
 
     // update the position reset data to capture changes due to a lane switch
     // new_primary - index of the ekf instance that we are about to switch to as the primary
     // old_primary - index of the ekf instance that we are currently using as the primary
-    void updateLaneSwitchPosResetData(uint8_t new_primary, uint8_t old_primary);
+    void updateLaneSwitchPosResetData(uint8_t new_primary);
 
     // update the position down reset data to capture changes due to a lane switch
     // new_primary - index of the ekf instance that we are about to switch to as the primary
     // old_primary - index of the ekf instance that we are currently using as the primary
-    void updateLaneSwitchPosDownResetData(uint8_t new_primary, uint8_t old_primary);
+    void updateLaneSwitchPosDownResetData(uint8_t new_primary);
 
     // Update instance error scores for all available cores 
     float updateCoreErrorScores(void);

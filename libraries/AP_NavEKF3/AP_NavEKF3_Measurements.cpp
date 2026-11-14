@@ -1,10 +1,16 @@
-#include <AP_HAL/AP_HAL.h>
-
 #include "AP_NavEKF3_core.h"
+
+#include "AP_NavEKF3.h"
+#include "AP_NavEKF3_feature.h"
+
 #include <GCS_MAVLink/GCS.h>
 #include <AP_Logger/AP_Logger.h>
 #include <AP_DAL/AP_DAL.h>
+#include <AP_InternalError/AP_InternalError.h>
 
+#define P (const_cast<const Matrix24 &>(Pmut))
+
+#if AP_RANGEFINDER_ENABLED
 /********************************************************
 *              OPT FLOW AND RANGE FINDER                *
 ********************************************************/
@@ -22,7 +28,7 @@ void NavEKF3_core::readRangeFinder(void)
     if (_rng == nullptr) {
         return;
     }
-    rngOnGnd = MAX(_rng->ground_clearance_cm_orient(ROTATION_PITCH_270) * 0.01f, 0.05f);
+    rngOnGnd = MAX(_rng->ground_clearance_orient(ROTATION_PITCH_270), 0.05f);
 
     // limit update rate to maximum allowed by data buffers
     if ((imuSampleTime_ms - lastRngMeasTime_ms) > frontend->sensorIntervalMin_ms) {
@@ -33,7 +39,7 @@ void NavEKF3_core::readRangeFinder(void)
         // store samples and sample time into a ring buffer if valid
         // use data from two range finders if available
 
-        for (uint8_t sensorIndex = 0; sensorIndex <= 1; sensorIndex++) {
+        for (uint8_t sensorIndex = 0; sensorIndex < ARRAY_SIZE(rngMeasIndex); sensorIndex++) {
             const auto *sensor = _rng->get_backend(sensorIndex);
             if (sensor == nullptr) {
                 continue;
@@ -44,13 +50,13 @@ void NavEKF3_core::readRangeFinder(void)
                     rngMeasIndex[sensorIndex] = 0;
                 }
                 storedRngMeasTime_ms[sensorIndex][rngMeasIndex[sensorIndex]] = imuSampleTime_ms - 25;
-                storedRngMeas[sensorIndex][rngMeasIndex[sensorIndex]] = sensor->distance_cm() * 0.01f;
+                storedRngMeas[sensorIndex][rngMeasIndex[sensorIndex]] = sensor->distance();
             } else {
                 continue;
             }
 
             // check for three fresh samples
-            bool sampleFresh[2][3] = {};
+            bool sampleFresh[DOWNWARD_RANGEFINDER_MAX_INSTANCES][3] = {};
             for (uint8_t index = 0; index <= 2; index++) {
                 sampleFresh[sensorIndex][index] = (imuSampleTime_ms - storedRngMeasTime_ms[sensorIndex][index]) < 500;
             }
@@ -89,7 +95,7 @@ void NavEKF3_core::readRangeFinder(void)
                 // indicate we have updated the measurement
                 rngValidMeaTime_ms = imuSampleTime_ms;
 
-            } else if (!takeOffDetected && ((imuSampleTime_ms - rngValidMeaTime_ms) > 200)) {
+            } else if (onGround && ((imuSampleTime_ms - rngValidMeaTime_ms) > 200)) {
                 // before takeoff we assume on-ground range value if there is no data
                 rangeDataNew.time_ms = imuSampleTime_ms;
                 rangeDataNew.rng = rngOnGnd;
@@ -104,6 +110,7 @@ void NavEKF3_core::readRangeFinder(void)
         }
     }
 }
+#endif  // AP_RANGEFINDER_ENABLED
 
 void NavEKF3_core::writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vector3f &delAng, float delTime, uint32_t timeStamp_ms, uint16_t delay_ms, const Vector3f &posOffset)
 {
@@ -115,30 +122,30 @@ void NavEKF3_core::writeBodyFrameOdom(float quality, const Vector3f &delPos, con
 
     // limit update rate to maximum allowed by sensor buffers and fusion process
     // don't try to write to buffer until the filter has been initialised
-    if (((timeStamp_ms - bodyOdmMeasTime_ms) < frontend->sensorIntervalMin_ms) || (delTime < dtEkfAvg) || !statesInitialised) {
+    if (((timeStamp_ms - bodyOdm.measTime_ms) < frontend->sensorIntervalMin_ms) || (delTime < dtEkfAvg) || !statesInitialised) {
         return;
     }
 
     // subtract delay from timestamp
     timeStamp_ms -= delay_ms;
 
-    bodyOdmDataNew.body_offset = posOffset.toftype();
-    bodyOdmDataNew.vel = delPos.toftype() * (1.0/delTime);
-    bodyOdmDataNew.time_ms = timeStamp_ms;
-    bodyOdmDataNew.angRate = (delAng * (1.0/delTime)).toftype();
-    bodyOdmMeasTime_ms = timeStamp_ms;
+    bodyOdm.dataNew.body_offset = posOffset.toftype();
+    bodyOdm.dataNew.vel = delPos.toftype() * (1.0/delTime);
+    bodyOdm.dataNew.time_ms = timeStamp_ms;
+    bodyOdm.dataNew.angRate = (delAng * (1.0/delTime)).toftype();
+    bodyOdm.measTime_ms = timeStamp_ms;
 
     // simple model of accuracy
     // TODO move this calculation outside of EKF into the sensor driver
-    bodyOdmDataNew.velErr = frontend->_visOdmVelErrMin + (frontend->_visOdmVelErrMax - frontend->_visOdmVelErrMin) * (1.0f - 0.01f * quality);
+    bodyOdm.dataNew.velErr = frontend->_visOdmVelErrMin + (frontend->_visOdmVelErrMax - frontend->_visOdmVelErrMin) * (1.0f - 0.01f * quality);
 
-    storedBodyOdm.push(bodyOdmDataNew);
+    bodyOdm.stored.push(bodyOdm.dataNew);
 #endif // EK3_FEATURE_BODY_ODOM
 }
 
-#if EK3_FEATURE_BODY_ODOM
 void NavEKF3_core::writeWheelOdom(float delAng, float delTime, uint32_t timeStamp_ms, const Vector3f &posOffset, float radius)
 {
+#if EK3_FEATURE_BODY_ODOM
     // This is a simple hack to get wheel encoder data into the EKF and verify the interface sign conventions and units
     // It uses the exisiting body frame velocity fusion.
     // TODO implement a dedicated wheel odometry observation model
@@ -160,13 +167,14 @@ void NavEKF3_core::writeWheelOdom(float delAng, float delTime, uint32_t timeStam
     // the measurement time is moved back to the middle of the sampling period
     wheelOdmDataNew.time_ms = timeStamp_ms - (uint32_t)(500.0f * delTime);
 
-    storedWheelOdm.push(wheelOdmDataNew);
-}
+    bodyOdm.storedWheel.push(wheelOdmDataNew);
 #endif // EK3_FEATURE_BODY_ODOM
+}
 
+#if EK3_FEATURE_OPTFLOW_FUSION
 // write the raw optical flow measurements
 // this needs to be called externally.
-void NavEKF3_core::writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f &rawFlowRates, const Vector2f &rawGyroRates, const uint32_t msecFlowMeas, const Vector3f &posOffset)
+void NavEKF3_core::writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f &rawFlowRates, const Vector2f &rawGyroRates, const uint32_t msecFlowMeas, const Vector3f &posOffset, float heightOverride)
 {
     // limit update rate to maximum allowed by sensor buffers
     if ((imuSampleTime_ms - flowMeaTime_ms) < frontend->sensorIntervalMin_ms) {
@@ -215,6 +223,8 @@ void NavEKF3_core::writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f
         ofDataNew.flowRadXY = - rawFlowRates.toftype(); // raw (non motion compensated) optical flow angular rate about the X axis (rad/sec)
         // write the flow sensor position in body frame
         ofDataNew.body_offset = posOffset.toftype();
+        // write the flow sensor height override
+        ofDataNew.heightOverride = heightOverride;
         // write flow rate measurements corrected for body rates
         ofDataNew.flowRadXYcomp.x = ofDataNew.flowRadXY.x + ofDataNew.bodyRadXYZ.x;
         ofDataNew.flowRadXYcomp.y = ofDataNew.flowRadXY.y + ofDataNew.bodyRadXYZ.y;
@@ -230,6 +240,7 @@ void NavEKF3_core::writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f
         storedOF.push(ofDataNew);
     }
 }
+#endif  // EK3_FEATURE_OPTFLOW_FUSION
 
 
 /********************************************************
@@ -249,27 +260,41 @@ void NavEKF3_core::tryChangeCompass(void)
         if (tempIndex >= maxCount) {
             tempIndex -= maxCount;
         }
-        // if the magnetometer is allowed to be used for yaw and has a different index, we start using it
-        if (compass.healthy(tempIndex) && compass.use_for_yaw(tempIndex) && tempIndex != magSelectIndex) {
-            magSelectIndex = tempIndex;
-            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "EKF3 IMU%u switching to compass %u",(unsigned)imu_index,magSelectIndex);
-            // reset the timeout flag and timer
-            magTimeout = false;
-            lastHealthyMagTime_ms = imuSampleTime_ms;
-            // zero the learned magnetometer bias states
-            stateStruct.body_magfield.zero();
-            // clear the measurement buffer
-            storedMag.reset();
-            // clear the data waiting flag so that we do not use any data pending from the previous sensor
-            magDataToFuse = false;
-            // request a reset of the magnetic field states
-            magStateResetRequest = true;
-            // declare the field unlearned so that the reset request will be obeyed
-            magFieldLearned = false;
-            // reset body mag variances on next CovariancePrediction
-            needMagBodyVarReset = true;
-            return;
-        }
+        tryChangeCompass(tempIndex);
+    }
+}
+
+// try changing to a specific compass index
+void NavEKF3_core::tryChangeCompass(uint8_t mag_index)
+{
+    const auto &compass = dal.compass();
+    const uint8_t maxCount = compass.get_count();
+
+    if (mag_index >= maxCount) {
+        // we assume the passed index should be valid
+        return;
+    }
+
+     // if the magnetometer is allowed to be used for yaw and has a different index, we start using it
+    if (compass.healthy(mag_index) && compass.use_for_yaw(mag_index) && mag_index != magSelectIndex) {
+        magSelectIndex = mag_index;
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "EKF3 IMU%u switching to compass %u",(unsigned)imu_index,magSelectIndex);
+        // reset the timeout flag and timer
+        magTimeout = false;
+        lastHealthyMagTime_ms = imuSampleTime_ms;
+        // zero the learned magnetometer bias states
+        stateStruct.body_magfield.zero();
+        // clear the measurement buffer
+        storedMag.reset();
+        // clear the data waiting flag so that we do not use any data pending from the previous sensor
+        magDataToFuse = false;
+        // request a reset of the magnetic field states
+        magStateResetRequest = true;
+        // declare the field unlearned so that the reset request will be obeyed
+        magFieldLearned = false;
+        // reset body mag variances on next CovariancePrediction
+        needMagBodyVarReset = true;
+        return;
     }
 }
 
@@ -292,15 +317,10 @@ void NavEKF3_core::readMagData()
     }
 
     if (compass.learn_offsets_enabled()) {
-        // while learning offsets keep all mag states reset
-        InitialiseVariablesMag();
         wasLearningCompass_ms = imuSampleTime_ms;
     } else if (wasLearningCompass_ms != 0 && imuSampleTime_ms - wasLearningCompass_ms > 1000) {
+        // allow time for old data to clear the buffer before signalling other code that compass data can be used
         wasLearningCompass_ms = 0;
-        // force a new yaw alignment 1s after learning completes. The
-        // delay is to ensure any buffered mag samples are discarded
-        yawAlignComplete = false;
-        InitialiseVariablesMag();
     }
 
     // If the magnetometer has timed out (been rejected for too long), we find another magnetometer to use if available
@@ -374,7 +394,7 @@ void NavEKF3_core::readMagData()
  *  Downsampling is done using a method that does not introduce coning or sculling
  *  errors.
  */
-void NavEKF3_core::readIMUData()
+void NavEKF3_core::readIMUData(bool startPredictEnabled)
 {
     const auto &ins = dal.ins();
 
@@ -389,13 +409,13 @@ void NavEKF3_core::readIMUData()
     if (ins.use_accel(imu_index)) {
         accel_active = imu_index;
     } else {
-        accel_active = ins.get_primary_accel();
+        accel_active = ins.get_first_usable_accel();
     }
 
     if (ins.use_gyro(imu_index)) {
         gyro_active = imu_index;
     } else {
-        gyro_active = ins.get_primary_gyro();
+        gyro_active = ins.get_first_usable_gyro();
     }
 
     if (gyro_active != gyro_index_active) {
@@ -549,7 +569,7 @@ void NavEKF3_core::readGpsData()
         return;
     }
 
-    if (gps.status(selected_gps) < AP_DAL_GPS::GPS_OK_FIX_3D) {
+    if (gps.status(selected_gps) < AP_GPS_FixType::FIX_3D) {
         // report GPS fix status
         gpsCheckStatus.bad_fix = true;
         dal.snprintf(prearm_fail_string, sizeof(prearm_fail_string), "Waiting for 3D fix");
@@ -629,10 +649,31 @@ void NavEKF3_core::readGpsData()
     }
 
     // Check if GPS can output vertical velocity, vertical velocity use is permitted and set GPS fusion mode accordingly
-    if (gpsDataNew.have_vz && frontend->sources.useVelZSource(AP_NavEKF_Source::SourceZ::GPS)) {
+    if (gpsDataNew.have_vz && frontend->sources.useVelZSource(AP_NavEKF_Source::SourceZ::GPS, core_index)) {
         useGpsVertVel = true;
     } else {
         useGpsVertVel = false;
+    }
+
+    if (frontend->option_is_enabled(NavEKF3::Option::JammingExpected) &&
+        (lastTimeGpsReceived_ms - secondLastGpsTime_ms) > frontend->gpsNoFixTimeout_ms) {
+        const bool doingBodyVelNav = (imuSampleTime_ms - bodyOdm.prevFuseTime_ms < 1000);
+        const bool doingFlowNav = (imuSampleTime_ms - prevFlowFuseTime_ms < 1000);;
+        const bool canDoWindRelNav = assume_zero_sideslip();
+        const bool canDeadReckon = ((doingFlowNav && gndOffsetValid) || canDoWindRelNav || doingBodyVelNav);
+        if (canDeadReckon) {
+            // If we can do dead reckoning with a data source other than GPS there is time to wait
+            // for GPS alignment checks to pass before using GPS inside the EKF.
+            // this gets set back to false in calcGpsGoodToAlign() when GPS checks pass
+            waitingForGpsChecks = true;
+            // force GPS checks to restart
+            lastPreAlignGpsCheckTime_ms = 0;
+            lastGpsVelFail_ms = imuSampleTime_ms;
+            lastGpsVelPass_ms = 0;
+            gpsGoodToAlign = false;
+        } else {
+            waitingForGpsChecks = false;
+        }
     }
 
     // Monitor quality of the GPS velocity data before and after alignment
@@ -642,7 +683,7 @@ void NavEKF3_core::readGpsData()
     calcGpsGoodForFlight();
 
     // Read the GPS location in WGS-84 lat,long,height coordinates
-    const struct Location &gpsloc = gps.location(selected_gps);
+    const Location &gpsloc = gps.location(selected_gps);
 
     // Set the EKF origin and magnetic field declination if not previously set and GPS checks have passed
     if (gpsGoodToAlign && !validOrigin) {
@@ -652,7 +693,7 @@ void NavEKF3_core::readGpsData()
             gpsloc_fieldelevation.alt += (int32_t)(100.0f * stateStruct.position.z);
         }
 
-        if (!setOrigin(gpsloc_fieldelevation)) {
+        if (!setOriginLLH(gpsloc_fieldelevation)) {
             // set an error as an attempt was made to set the origin more than once
             INTERNAL_ERROR(AP_InternalError::error_t::flow_of_control);
             return;
@@ -671,24 +712,19 @@ void NavEKF3_core::readGpsData()
     }
 
     if (gpsGoodToAlign && !have_table_earth_field) {
-        const auto &compass = dal.compass();
-        if (compass.have_scale_factor(magSelectIndex) &&
-            compass.auto_declination_enabled()) {
-            getEarthFieldTable(gpsloc);
-            if (frontend->_mag_ef_limit > 0) {
-                // initialise earth field from tables
-                stateStruct.earth_magfield = table_earth_field_ga;
-            }
-        }
+        setEarthFieldFromLocation(gpsloc);
     }
 
     // convert GPS measurements to local NED and save to buffer to be fused later if we have a valid origin
-    if (validOrigin) {
+    // and are not waiting for GPs checks to pass
+    if (validOrigin && !waitingForGpsChecks) {
         gpsDataNew.lat = gpsloc.lat;
         gpsDataNew.lng = gpsloc.lng;
         if ((frontend->_originHgtMode & (1<<2)) == 0) {
+            // the height adjustment to match GPS is being achieved by adjusting the origin height
             gpsDataNew.hgt = (ftype)((double)0.01 * (double)gpsloc.alt - ekfGpsRefHgt);
         } else {
+            // the height adjustment to match GPS is being achieved by adjusting the measurements
             gpsDataNew.hgt = 0.01 * (gpsloc.alt - EKF_origin.alt);
         }
         storedGPS.push(gpsDataNew);
@@ -705,16 +741,20 @@ void NavEKF3_core::readGpsYawData()
     // if the GPS has yaw data then fuse it as an Euler yaw angle
     float yaw_deg, yaw_accuracy_deg;
     uint32_t yaw_time_ms;
-    if (gps.status(selected_gps) >= AP_DAL_GPS::GPS_OK_FIX_3D &&
+    if (gps.status(selected_gps) >= AP_GPS_FixType::FIX_3D &&
         dal.gps().gps_yaw_deg(selected_gps, yaw_deg, yaw_accuracy_deg, yaw_time_ms) &&
-        yaw_time_ms != yawMeasTime_ms) {
+        yaw_time_ms != gpsYaw.measTime_ms) {
         // GPS modules are rather too optimistic about their
         // accuracy. Set to min of 5 degrees here to prevent
         // the user constantly receiving warnings about high
         // normalised yaw innovations
         const ftype min_yaw_accuracy_deg = 5.0f;
         yaw_accuracy_deg = MAX(yaw_accuracy_deg, min_yaw_accuracy_deg);
+#if EK3_FEATURE_MOVING_BASELINE
+        writeEulerYawAngle(radians(yaw_deg), radians(yaw_accuracy_deg), yaw_time_ms, 2, gps.get_mb_yaw_offset(selected_gps));
+#else
         writeEulerYawAngle(radians(yaw_deg), radians(yaw_accuracy_deg), yaw_time_ms, 2);
+#endif
     }
 }
 
@@ -828,40 +868,62 @@ void NavEKF3_core::readAirSpdData()
     // we take a new reading, convert from EAS to TAS and set the flag letting other functions
     // know a new measurement is available
 
-    const auto *airspeed = dal.airspeed();
-    if (airspeed &&
-        airspeed->use(selected_airspeed) &&
-        airspeed->healthy(selected_airspeed) &&
-        (airspeed->last_update_ms(selected_airspeed) - timeTasReceived_ms) > frontend->sensorIntervalMin_ms) {
-        tasDataNew.tas = airspeed->get_airspeed(selected_airspeed) * EAS2TAS;
-        timeTasReceived_ms = airspeed->last_update_ms(selected_airspeed);
-        tasDataNew.time_ms = timeTasReceived_ms - frontend->tasDelay_ms;
-        tasDataNew.tasVariance = sq(MAX(frontend->_easNoise * EAS2TAS, 0.5f));
-
-        // Correct for the average intersampling delay due to the filter update rate
-        tasDataNew.time_ms -= localFilterTimeStep_ms/2;
-
-        // Save data into the buffer to be fused when the fusion time horizon catches up with it
-        storedTAS.push(tasDataNew);
-    }
-
-    // Check the buffer for measurements that have been overtaken by the fusion time horizon and need to be fused
-    tasDataToFuse = storedTAS.recall(tasDataDelayed,imuDataDelayed.time_ms);
-
-    float easErrVar = sq(MAX(frontend->_easNoise, 0.5f));
-    // Allow use of a default value if enabled
-    if (!useAirspeed() &&
-        imuDataDelayed.time_ms - tasDataDelayed.time_ms > 200 &&
-        is_positive(defaultAirSpeed)) {
-        tasDataDelayed.tas = defaultAirSpeed * EAS2TAS;
-        tasDataDelayed.tasVariance = sq(MAX(defaultAirSpeedVariance, easErrVar));
-        tasDataDelayed.time_ms = 0;
-        usingDefaultAirspeed = true;
+    if (useAirspeed()) {
+        const auto *airspeed = dal.airspeed();
+        if (airspeed &&
+            (airspeed->last_update_ms(selected_airspeed) - tas.receivedTime_ms) > frontend->sensorIntervalMin_ms) {
+            tas.dataNew.allowFusion = airspeed->healthy(selected_airspeed) && airspeed->use(selected_airspeed);
+            if (tas.dataNew.allowFusion) {
+                tas.dataNew.tas = airspeed->get_airspeed(selected_airspeed) * EAS2TAS;
+                tas.receivedTime_ms = airspeed->last_update_ms(selected_airspeed);
+                tas.dataNew.time_ms = tas.receivedTime_ms - frontend->tasDelay_ms;
+                tas.dataNew.tasVariance = sq(MAX(frontend->_easNoise * EAS2TAS, 0.5f));
+                // Correct for the average intersampling delay due to the filter update rate
+                tas.dataNew.time_ms -= localFilterTimeStep_ms/2;
+                // Save data into the buffer to be fused when the fusion time horizon catches up with it
+                tas.stored.push(tas.dataNew);
+            }
+        }
+        // Check the buffer for measurements that have been overtaken by the fusion time horizon and need to be fused
+        tas.dataToFuse = tas.stored.recall(tas.dataDelayed,imuDataDelayed.time_ms);
+    } else if (assume_zero_sideslip()) {
+        // synthetic airspeed is only valid for 'fly forward' vehicles that
+        // do not sideslip; fusing it on a multicopter corrupts the attitude
+        // and velocity states when dead reckoning (see issue #33451)
+        if (is_positive(defaultAirSpeed)) {
+            // this is the preferred method with the autopilot providing a model based airspeed estimate
+            if (imuDataDelayed.time_ms - tas.prevStepTime_ms > 200 ) {
+                tas.dataDelayed.tas = defaultAirSpeed * EAS2TAS;
+                tas.dataDelayed.tasVariance = MAX(defaultAirSpeedVariance, sq(MAX(frontend->_easNoise, 0.5f)));
+                tas.dataToFuse = true;
+                tas.dataDelayed.allowFusion = true;
+                tas.dataDelayed.time_ms = imuDataDelayed.time_ms;
+            } else {
+                tas.dataToFuse = false;
+                tas.dataDelayed.allowFusion = false;
+            }
+        } else if (lastAspdEstIsValid && !windStateIsObservable) {
+            // this uses the last airspeed estimated before dead reckoning started and
+            // wind states became unobservable
+            if (lastAspdEstIsValid && imuDataDelayed.time_ms - tas.prevStepTime_ms > 200) {
+                tas.dataDelayed.tas = lastAirspeedEstimate;
+                // this airspeed estimate has a lot of uncertainty
+                tas.dataDelayed.tasVariance = sq(MAX(MAX(frontend->_easNoise, 0.5f), 0.5f * lastAirspeedEstimate));
+                tas.dataToFuse = true;
+                tas.dataDelayed.allowFusion = true;
+                tas.dataDelayed.time_ms = imuDataDelayed.time_ms;
+            } else {
+                tas.dataToFuse = false;
+                tas.dataDelayed.allowFusion = false;
+            }
+        }
     } else {
-        usingDefaultAirspeed = false;
+        tas.dataToFuse = false;
+        tas.dataDelayed.allowFusion = false;
     }
 }
 
+#if EK3_FEATURE_BEACON_FUSION
 /********************************************************
 *              Range Beacon Measurements                *
 ********************************************************/
@@ -870,7 +932,7 @@ void NavEKF3_core::readAirSpdData()
 void NavEKF3_core::readRngBcnData()
 {
     // check that arrays are large enough
-    static_assert(ARRAY_SIZE(lastTimeRngBcn_ms) >= AP_BEACON_MAX_BEACONS, "lastTimeRngBcn_ms should have at least AP_BEACON_MAX_BEACONS elements");
+    static_assert(ARRAY_SIZE(rngBcn.lastTime_ms) >= AP_BEACON_MAX_BEACONS, "lastTimeRngBcn_ms should have at least AP_BEACON_MAX_BEACONS elements");
 
     // get the location of the beacon data
     const AP_DAL_Beacon *beacon = dal.beacon();
@@ -881,34 +943,34 @@ void NavEKF3_core::readRngBcnData()
     }
 
     // get the number of beacons in use
-    N_beacons = MIN(beacon->count(), ARRAY_SIZE(lastTimeRngBcn_ms));
+    rngBcn.N = MIN(beacon->count(), ARRAY_SIZE(rngBcn.lastTime_ms));
 
     // search through all the beacons for new data and if we find it stop searching and push the data into the observation buffer
     bool newDataPushed = false;
     uint8_t numRngBcnsChecked = 0;
     // start the search one index up from where we left it last time
-    uint8_t index = lastRngBcnChecked;
-    while (!newDataPushed && (numRngBcnsChecked < N_beacons)) {
+    uint8_t index = rngBcn.lastChecked;
+    while (!newDataPushed && (numRngBcnsChecked < rngBcn.N)) {
         // track the number of beacons checked
         numRngBcnsChecked++;
 
         // move to next beacon, wrap index if necessary
         index++;
-        if (index >= N_beacons) {
+        if (index >= rngBcn.N) {
             index = 0;
         }
 
         // check that the beacon is healthy and has new data
-        if (beacon->beacon_healthy(index) && beacon->beacon_last_update_ms(index) != lastTimeRngBcn_ms[index]) {
+        if (beacon->beacon_healthy(index) && beacon->beacon_last_update_ms(index) != rngBcn.lastTime_ms[index]) {
             rng_bcn_elements rngBcnDataNew = {};
 
             // set the timestamp, correcting for measurement delay and average intersampling delay due to the filter update rate
-            lastTimeRngBcn_ms[index] = beacon->beacon_last_update_ms(index);
-            rngBcnDataNew.time_ms = lastTimeRngBcn_ms[index] - frontend->_rngBcnDelay_ms - localFilterTimeStep_ms/2;
+            rngBcn.lastTime_ms[index] = beacon->beacon_last_update_ms(index);
+            rngBcnDataNew.time_ms = rngBcn.lastTime_ms[index] - frontend->_rngBcnDelay_ms - localFilterTimeStep_ms/2;
 
             // set the range noise
             // TODO the range library should provide the noise/accuracy estimate for each beacon
-            rngBcnDataNew.rngErr = frontend->_rngBcnNoise;
+            rngBcnDataNew.rngErr = frontend->_rngBcnNoise.get();
 
             // set the range measurement
             rngBcnDataNew.rng = beacon->beacon_distance(index);
@@ -923,10 +985,10 @@ void NavEKF3_core::readRngBcnData()
             newDataPushed = true;
 
             // update the last checked index
-            lastRngBcnChecked = index;
+            rngBcn.lastChecked = index;
 
             // Save data into the buffer to be fused when the fusion time horizon catches up with it
-            storedRangeBeacon.push(rngBcnDataNew);
+            rngBcn.storedRange.push(rngBcnDataNew);
         }
     }
 
@@ -934,18 +996,18 @@ void NavEKF3_core::readRngBcnData()
     Vector3f bp;
     float bperr;
     if (beacon->get_vehicle_position_ned(bp, bperr)) {
-        rngBcnLast3DmeasTime_ms = imuSampleTime_ms;
+        rngBcn.last3DmeasTime_ms = imuSampleTime_ms;
     }
-    beaconVehiclePosNED = bp.toftype();
-    beaconVehiclePosErr = bperr;
+    rngBcn.vehiclePosNED = bp.toftype();
+    rngBcn.vehiclePosErr = bperr;
 
     // Check if the range beacon data can be used to align the vehicle position
-    if ((imuSampleTime_ms - rngBcnLast3DmeasTime_ms < 250) && (beaconVehiclePosErr < 1.0f) && rngBcnAlignmentCompleted) {
+    if ((imuSampleTime_ms - rngBcn.last3DmeasTime_ms < 250) && (rngBcn.vehiclePosErr < 1.0f) && rngBcn.alignmentCompleted) {
         // check for consistency between the position reported by the beacon and the position from the 3-State alignment filter
-        const ftype posDiffSq = sq(receiverPos.x - beaconVehiclePosNED.x) + sq(receiverPos.y - beaconVehiclePosNED.y);
-        const ftype posDiffVar = sq(beaconVehiclePosErr) + receiverPosCov[0][0] + receiverPosCov[1][1];
+        const ftype posDiffSq = sq(rngBcn.receiverPos.x - rngBcn.vehiclePosNED.x) + sq(rngBcn.receiverPos.y - rngBcn.vehiclePosNED.y);
+        const ftype posDiffVar = sq(rngBcn.vehiclePosErr) + rngBcn.receiverPosCov[0][0] + rngBcn.receiverPosCov[1][1];
         if (posDiffSq < 9.0f * posDiffVar) {
-            rngBcnGoodToAlign = true;
+            rngBcn.goodToAlign = true;
             // Set the EKF origin and magnetic field declination if not previously set
             if (!validOrigin && (PV_AidingMode != AID_ABSOLUTE)) {
                 // get origin from beacon system
@@ -958,53 +1020,62 @@ void NavEKF3_core::readRngBcnData()
                     alignMagStateDeclination();
 
                     // Set the uncertainty of the origin height
-                    ekfOriginHgtVar = sq(beaconVehiclePosErr);
+                    ekfOriginHgtVar = sq(rngBcn.vehiclePosErr);
                 }
             }
         } else {
-            rngBcnGoodToAlign = false;
+            rngBcn.goodToAlign = false;
         }
     } else {
-        rngBcnGoodToAlign = false;
+        rngBcn.goodToAlign = false;
     }
 
     // Check the buffer for measurements that have been overtaken by the fusion time horizon and need to be fused
-    rngBcnDataToFuse = storedRangeBeacon.recall(rngBcnDataDelayed, imuDataDelayed.time_ms);
+    rngBcn.dataToFuse = rngBcn.storedRange.recall(rngBcn.dataDelayed, imuDataDelayed.time_ms);
 
     // Correct the range beacon earth frame origin for estimated offset relative to the EKF earth frame origin
-    if (rngBcnDataToFuse) {
-        rngBcnDataDelayed.beacon_posNED.x += bcnPosOffsetNED.x;
-        rngBcnDataDelayed.beacon_posNED.y += bcnPosOffsetNED.y;
+    if (rngBcn.dataToFuse) {
+        rngBcn.dataDelayed.beacon_posNED.x += rngBcn.posOffsetNED.x;
+        rngBcn.dataDelayed.beacon_posNED.y += rngBcn.posOffsetNED.y;
     }
 
 }
+#endif  // EK3_FEATURE_BEACON_FUSION
 
 /********************************************************
 *              Independant yaw sensor measurements      *
 ********************************************************/
 
-void NavEKF3_core::writeEulerYawAngle(float yawAngle, float yawAngleErr, uint32_t timeStamp_ms, uint8_t type)
+void NavEKF3_core::writeEulerYawAngle(float yawAngle, float yawAngleErr, uint32_t timeStamp_ms, uint8_t type, const Vector3f &antOffset)
 {
     // limit update rate to maximum allowed by sensor buffers and fusion process
     // don't try to write to buffer until the filter has been initialised
-    if (((timeStamp_ms - yawMeasTime_ms) < frontend->sensorIntervalMin_ms) || !statesInitialised) {
+    if (((timeStamp_ms - gpsYaw.measTime_ms) < frontend->sensorIntervalMin_ms) || !statesInitialised) {
         return;
     }
 
-    yawAngDataNew.yawAng = yawAngle;
-    yawAngDataNew.yawAngErr = yawAngleErr;
+    gpsYaw.dataNew.yawAng = yawAngle;
+    gpsYaw.dataNew.yawAngErr = yawAngleErr;
     if (type == 2) {
-        yawAngDataNew.order = rotationOrder::TAIT_BRYAN_321;
+        gpsYaw.dataNew.order = rotationOrder::TAIT_BRYAN_321;
     } else if (type == 1) {
-        yawAngDataNew.order = rotationOrder::TAIT_BRYAN_312;
+        gpsYaw.dataNew.order = rotationOrder::TAIT_BRYAN_312;
     } else {
         return;
     }
-    yawAngDataNew.time_ms = timeStamp_ms;
+    // Prevent time delay exceeding age of oldest IMU data in the buffer. Without
+    // this a configured delay larger than the fusion time horizon leaves every
+    // measurement outside the recall window and the yaw source silently stops
+    // fusing. The raw timestamp is still used for new-measurement detection and
+    // rate limiting via gpsYaw.measTime_ms
+    gpsYaw.dataNew.time_ms = MAX(timeStamp_ms, imuDataDelayed.time_ms);
+#if EK3_FEATURE_MOVING_BASELINE
+    gpsYaw.dataNew.antOffset = antOffset.toftype();
+#endif
 
-    storedYawAng.push(yawAngDataNew);
+    gpsYaw.stored.push(gpsYaw.dataNew);
 
-    yawMeasTime_ms = timeStamp_ms;
+    gpsYaw.measTime_ms = timeStamp_ms;
 }
 
 // Writes the default equivalent airspeed and 1-sigma uncertainty in m/s to be used in forward flight if a measured airspeed is required and not available.
@@ -1028,17 +1099,17 @@ void NavEKF3_core::writeExtNavData(const Vector3f &pos, const Quaternion &quat, 
 
     // limit update rate to maximum allowed by sensor buffers and fusion process
     // don't try to write to buffer until the filter has been initialised
-    if (((timeStamp_ms - extNavMeasTime_ms) < frontend->extNavIntervalMin_ms) || !statesInitialised) {
+    if (((timeStamp_ms - extNav.measTime_ms) < frontend->extNavIntervalMin_ms) || !statesInitialised) {
         return;
     } else {
-        extNavMeasTime_ms = timeStamp_ms;
+        extNav.measTime_ms = timeStamp_ms;
     }
 
     ext_nav_elements extNavDataNew {};
 
-    if (resetTime_ms != extNavLastPosResetTime_ms) {
+    if (resetTime_ms != extNav.lastPosResetTime_ms) {
         extNavDataNew.posReset = true;
-        extNavLastPosResetTime_ms = resetTime_ms;
+        extNav.lastPosResetTime_ms = resetTime_ms;
     } else {
         extNavDataNew.posReset = false;
     }
@@ -1055,7 +1126,7 @@ void NavEKF3_core::writeExtNavData(const Vector3f &pos, const Quaternion &quat, 
     extNavDataNew.time_ms = timeStamp_ms;
 
     // store position data to buffer
-    storedExtNav.push(extNavDataNew);
+    extNav.stored.push(extNavDataNew);
 
     // protect against attitude or angle being NaN
     if (!quat.is_nan() && !isnan(angErr)) {
@@ -1067,7 +1138,7 @@ void NavEKF3_core::writeExtNavData(const Vector3f &pos, const Quaternion &quat, 
         extNavYawAngDataNew.yawAngErr = MAX(angErr, radians(5.0f)); // ensure yaw accuracy is no better than 5 degrees (some callers may send zero)
         extNavYawAngDataNew.order = rotationOrder::TAIT_BRYAN_321; // Euler rotation order is 321 (ZYX)
         extNavYawAngDataNew.time_ms = timeStamp_ms;
-        storedExtNavYawAng.push(extNavYawAngDataNew);
+        extNav.storedYawAng.push(extNavYawAngDataNew);
     }
 #endif // EK3_FEATURE_EXTERNAL_NAV
 }
@@ -1080,12 +1151,12 @@ void NavEKF3_core::writeExtNavVelData(const Vector3f &vel, float err, uint32_t t
         return;
     }
 
-    if ((timeStamp_ms - extNavVelMeasTime_ms) < frontend->extNavIntervalMin_ms) {
+    if ((timeStamp_ms - extNav.velMeasTime_ms) < frontend->extNavIntervalMin_ms) {
         return;
     }
 
-    extNavVelMeasTime_ms = timeStamp_ms;
-    useExtNavVel = true;
+    extNav.velMeasTime_ms = timeStamp_ms;
+    extNav.useVel = true;
     // calculate timestamp
     timeStamp_ms = timeStamp_ms - delay_ms;
     // Correct for the average intersampling delay due to the filter updaterate
@@ -1099,9 +1170,21 @@ void NavEKF3_core::writeExtNavVelData(const Vector3f &vel, float err, uint32_t t
     extNavVelNew.err = err;
     extNavVelNew.corrected = false;
 
-    storedExtNavVel.push(extNavVelNew);
+    extNav.storedVel.push(extNavVelNew);
 #endif // EK3_FEATURE_EXTERNAL_NAV
 }
+
+/*
+ * Write terrain altitude (derived from SRTM) in meters above the origin
+ * only used by optical flow when out of rangefinder range
+ */
+#if EK3_FEATURE_OPTFLOW_SRTM
+void NavEKF3_core::writeTerrainData(float alt_m)
+{
+    terrain_srtm_alt = alt_m;
+    terrain_srtm_alt_ms = imuSampleTime_ms;
+}
+#endif
 
 /*
   update the GPS selection
@@ -1120,7 +1203,7 @@ void NavEKF3_core::update_gps_selection(void)
             // many GPS sensors available
             preferred_gps = core_index;
         }
-        if (gps.status(preferred_gps) >= AP_DAL_GPS::GPS_OK_FIX_3D) {
+        if (gps.status(preferred_gps) >= AP_GPS_FixType::FIX_3D) {
             // select our preferred_gps if it has a 3D fix, otherwise
             // use the primary GPS
             selected_gps = preferred_gps;
@@ -1141,6 +1224,12 @@ void NavEKF3_core::update_mag_selection(void)
             compass.use_for_yaw(core_index)) {
             // use core_index compass if it is healthy
             magSelectIndex = core_index;
+        }
+    } else {
+        // if we are not armed, use the primary compass (if it is healthy)
+        const uint8_t primary_compass = compass.get_first_usable();
+        if (!dal.get_armed() && (magSelectIndex != primary_compass)) {
+            tryChangeCompass(primary_compass);
         }
     }
 }
@@ -1319,14 +1408,12 @@ ftype NavEKF3_core::MagDeclination(void) const
 /*
   Update the on ground and not moving check.
   Should be called once per IMU update.
-  Only updates when on ground and when operating without a magnetometer
+  Used for yaw fusion strategy selection, zero velocity fusion gating,
+  and accel bias learning inhibition during ground movement.
 */
 void NavEKF3_core::updateMovementCheck(void)
 {
-    const AP_NavEKF_Source::SourceYaw yaw_source = frontend->sources.getYawSource();
-    const bool runCheck = onGround && (yaw_source == AP_NavEKF_Source::SourceYaw::GPS || yaw_source == AP_NavEKF_Source::SourceYaw::GPS_COMPASS_FALLBACK ||
-                                       yaw_source == AP_NavEKF_Source::SourceYaw::EXTNAV || yaw_source == AP_NavEKF_Source::SourceYaw::GSF || !use_compass());
-    if (!runCheck)
+    if (!onGround)
     {
         onGroundNotMoving = false;
         return;
@@ -1388,6 +1475,7 @@ void NavEKF3_core::updateMovementCheck(void)
 
     if (logStatusChange || imuSampleTime_ms - lastMoveCheckLogTime_ms > 200) {
         lastMoveCheckLogTime_ms = imuSampleTime_ms;
+#if HAL_LOGGING_ENABLED
         const struct log_XKFM pkt{
             LOG_PACKET_HEADER_INIT(LOG_XKFM_MSG),
             time_us            : dal.micros64(),
@@ -1399,6 +1487,7 @@ void NavEKF3_core::updateMovementCheck(void)
             accel_diff_ratio   : float(accel_diff_ratio),
         };
         AP::logger().WriteBlock(&pkt, sizeof(pkt));
+#endif
     }
 }
 
@@ -1406,46 +1495,46 @@ void NavEKF3_core::SampleDragData(const imu_elements &imu)
 {
 #if EK3_FEATURE_DRAG_FUSION
     // Average and down sample to 5Hz
-    const ftype bcoef_x = frontend->_ballisticCoef_x;
-    const ftype bcoef_y = frontend->_ballisticCoef_y;
+    const ftype bcoef_x = frontend->_ballisticCoef_x.get();
+    const ftype bcoef_y = frontend->_ballisticCoef_y.get();
     const ftype mcoef = frontend->_momentumDragCoef.get();
     const bool using_bcoef_x = bcoef_x > 1.0f;
     const bool using_bcoef_y = bcoef_y > 1.0f;
     const bool using_mcoef = mcoef > 0.001f;
     if (!using_bcoef_x && !using_bcoef_y && !using_mcoef) {
         // nothing to do
-        dragFusionEnabled = false;
+        drag.fusionEnabled = false;
         return;
     }
 
-    dragFusionEnabled = true;
+    drag.fusionEnabled = true;
 
     // down-sample the drag specific force data by accumulating and calculating the mean when
     // sufficient samples have been collected
 
-    dragSampleCount ++;
+    drag.sampleCount ++;
 
     // note acceleration is accumulated as a delta velocity
-    dragDownSampled.accelXY.x += imu.delVel.x;
-    dragDownSampled.accelXY.y += imu.delVel.y;
-    dragDownSampled.time_ms += imu.time_ms;
-    dragSampleTimeDelta += imu.delVelDT;
+    drag.downSampled.accelXY.x += imu.delVel.x;
+    drag.downSampled.accelXY.y += imu.delVel.y;
+    drag.downSampled.time_ms += imu.time_ms;
+    drag.sampleTimeDelta += imu.delVelDT;
 
     // calculate and store means from accumulated values
-    if (dragSampleTimeDelta > 0.2f - 0.5f * EKF_TARGET_DT) {
+    if (drag.sampleTimeDelta > 0.2f - 0.5f * EKF_TARGET_DT) {
         // note conversion from accumulated delta velocity to acceleration
-        dragDownSampled.accelXY.x /= dragSampleTimeDelta;
-        dragDownSampled.accelXY.y /= dragSampleTimeDelta;
-        dragDownSampled.time_ms /= dragSampleCount;
+        drag.downSampled.accelXY.x /= drag.sampleTimeDelta;
+        drag.downSampled.accelXY.y /= drag.sampleTimeDelta;
+        drag.downSampled.time_ms /= drag.sampleCount;
 
         // write to buffer
-        storedDrag.push(dragDownSampled);
+        drag.stored.push(drag.downSampled);
 
         // reset accumulators
-        dragSampleCount = 0;
-        dragDownSampled.accelXY.zero();
-        dragDownSampled.time_ms = 0;
-        dragSampleTimeDelta = 0.0f;
+        drag.sampleCount = 0;
+        drag.downSampled.accelXY.zero();
+        drag.downSampled.time_ms = 0;
+        drag.sampleTimeDelta = 0.0f;
     }
 #endif // EK3_FEATURE_DRAG_FUSION
 }

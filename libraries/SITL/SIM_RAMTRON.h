@@ -1,5 +1,9 @@
 #pragma once
 
+#include "SIM_config.h"
+
+#if AP_SIM_RAMTRON_ENABLED
+
 #include "SIM_SPIDevice.h"
 
 namespace SITL {
@@ -33,3 +37,5 @@ private:
 };
 
 }
+
+#endif  // AP_SIM_RAMTRON_ENABLED

@@ -20,7 +20,6 @@
 #include <AP_SerialManager/AP_SerialManager.h>
 #include <SRV_Channel/SRV_Channel.h>
 #include <GCS_MAVLink/GCS.h>
-#include <AP_Math/AP_Math.h>
 
 #include "AP_FETtecOneWire.h"
 #if AP_FETTEC_ONEWIRE_ENABLED
@@ -96,7 +95,6 @@ void AP_FETtecOneWire::init_uart()
     }
     _uart->set_flow_control(AP_HAL::UARTDriver::FLOW_CONTROL_DISABLE);
     _uart->set_unbuffered_writes(true);
-    _uart->set_blocking_writes(false);
 
     uint32_t uart_baud { FULL_DUPLEX_BAUDRATE };
 #if HAL_AP_FETTEC_HALF_DUPLEX
@@ -123,26 +121,28 @@ void AP_FETtecOneWire::init()
     _motor_mask = _motor_mask_parameter; // take a copy that will not change after we leave this function
     _esc_count = __builtin_popcount(_motor_mask);
 #if HAL_WITH_ESC_TELEM
-    // OneWire supports at most 15 ESCs, because of the 4 bit limitation
+    // OneWire supports telemetry in at most 15 ESCs, because of the 4 bit limitation
     // on the fast-throttle command.  But we are still limited to the
     // number of ESCs the telem library will collect data for.
-    if (_esc_count == 0 || _motor_mask >= (1 << MIN(15, ESC_TELEM_MAX_ESCS))) {
+    const auto esc_count_limit = MIN(15, ESC_TELEM_MAX_ESCS);
 #else
-    if (_esc_count == 0 || _motor_mask >= (1 << NUM_SERVO_CHANNELS)) {
+    // OneWire supports at most 24 ESCs without telemetry
+    const auto esc_count_limit = MIN(MAX_ESC_COUNT, NUM_SERVO_CHANNELS);
 #endif
+    if (_esc_count == 0 || _motor_mask >= (1U << esc_count_limit)) {
         _invalid_mask = true;
         return;
     }
 
     // we have a uart and the desired ESC combination id valid, allocate some memory:
-    _escs = new ESC[_esc_count];
+    _escs = NEW_NOTHROW ESC[_esc_count];
     if (_escs == nullptr) {
         return;
     }
 
     // initialise ESC ids.  This enforces that the FETtec ESC ids
     // inside FETtec ESCs need to be contiguous and start at ID 1
-    // which required by fast-throttle commands.
+    // which is required by fast-throttle commands.
     uint8_t esc_offset = 0;  // offset into our device-driver dynamically-allocated array of ESCs
     uint8_t esc_id = 1;      // ESC ids inside FETtec protocol are one-indexed
     uint8_t servo_chan_offset = 0;  // offset into _motor_mask_parameter array
@@ -155,7 +155,7 @@ void AP_FETtecOneWire::init()
     }
     _invalid_mask = false;  // mask is good
 
-    gcs().send_text(MAV_SEVERITY_INFO, "FETtec: allocated %u motors", _esc_count);
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "FETtec: allocated %u motors", _esc_count);
 
     // We expect to be able to send a fast-throttle command in each loop.
     // 8  bits - OneWire Header
@@ -562,6 +562,11 @@ void AP_FETtecOneWire::pack_fast_throttle_command(const uint16_t *motor_values, 
     uint8_t mot = 0;
     uint8_t bits_remaining_in_this_pwm = 7;
     for (uint8_t out_byte_offset = 2; out_byte_offset<length; out_byte_offset++) {
+        if (mot >= _esc_count) {
+            // all motor bits consumed; remaining bytes are padding before CRC
+            fast_throttle_command[out_byte_offset] = 0;
+            continue;
+        }
         if (bits_remaining_in_this_pwm >= 8) {
             // const uint8_t mask = 0xFF << (11-bits_remaining_in_this_pwm);
             fast_throttle_command[out_byte_offset] = (motor_values[mot] >> (bits_remaining_in_this_pwm-8)) & 0xFF;
@@ -751,7 +756,7 @@ void AP_FETtecOneWire::configure_escs()
         case ESCState::WAITING_SET_FAST_COM_LENGTH_OK:
             return;
         case ESCState::RUNNING:
-            _running_mask |= (1 << esc.servo_ofs);
+            _running_mask |= (1U << esc.servo_ofs);
             break;
         }
     }
@@ -783,7 +788,7 @@ void AP_FETtecOneWire::update()
                 // telem OK
                 continue;
             }
-            _running_mask &= ~(1 << esc.servo_ofs);
+            _running_mask &= ~(1U << esc.servo_ofs);
             GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "No telem from esc id=%u. Resetting it.", esc.id);
             //GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "unknown %u, invalid %u, too short %u, unexpected: %u, crc_err %u", _unknown_esc_message, _message_invalid_in_state_count, _period_too_short, esc.unexpected_telem, crc_rec_err_cnt);
             esc.set_state(ESCState::WANT_SEND_OK_TO_GET_RUNNING_SW_TYPE);
@@ -816,8 +821,7 @@ void AP_FETtecOneWire::update()
     }
 #endif
 
-    // get ESC set points
-    uint16_t motor_pwm[_esc_count];
+    uint16_t motor_pwm[MAX_ESC_COUNT];
     for (uint8_t i = 0; i < _esc_count; i++) {
         const ESC &esc = _escs[i];
         const SRV_Channel* c = SRV_Channels::srv_channel(esc.servo_ofs);
@@ -858,9 +862,9 @@ void AP_FETtecOneWire::beep(const uint8_t beep_frequency)
 #if HAL_AP_FETTEC_ESC_LIGHT
 /**
     sets the racewire color for all ESCs
-    @param r red brightness
-    @param g green brightness
-    @param b blue brightness
+    r = red brightness
+    g = green brightness
+    b = blue brightness
 */
 void AP_FETtecOneWire::led_color(const uint8_t r, const uint8_t g, const uint8_t b)
 {

@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+
+# flake8: noqa
 '''
 these tables are generated from the STM32 datasheet RM0402 in en.DM00180369.pdf for the
 STM32F412
@@ -17,7 +19,14 @@ mcu = {
     # flags of 2 means faster memory for CPU intensive work
     'RAM_MAP' : [
         (0x20000000, 256, 1), # main memory, DMA safe
-    ]
+    ],
+
+    'EXPECTED_CLOCK' : 100000000,
+
+    'DEFINES' : {
+        'STM32F4' : '1',
+    }
+
 }
 
 DMA_Map = {

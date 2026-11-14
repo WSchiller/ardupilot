@@ -26,7 +26,7 @@ class AP_OSD_Backend
 
 public:
     //constructor
-    AP_OSD_Backend(AP_OSD &osd): _osd(osd) {};
+    AP_OSD_Backend(AP_OSD &osd): _osd(osd) {}
 
     //destructor
     virtual ~AP_OSD_Backend(void) {}
@@ -51,10 +51,28 @@ public:
     virtual void clear()
     {
         blink_phase = (blink_phase+1)%4;
-    };
+    }
 
     // copy the backend specific symbol set to the OSD lookup table
     virtual void init_symbol_set(uint8_t *symbols, const uint8_t size);
+    virtual bool is_compatible_with_backend_type(AP_OSD::osd_types type) const = 0;
+    virtual AP_OSD::osd_types get_backend_type() const = 0;
+
+    // called by the OSD thread once
+    virtual void osd_thread_run_once() { return; }
+
+    // called by the OSD thread on every update, whether or not a script is drawing
+    virtual void osd_thread_update() { return; }
+
+#if OSD_ENABLED && AP_EXTERNAL_BINDING_ENABLED
+    // passthrough OSD functions for use by scripting
+    bool display_disabled() const { return _osd.display_disabled(); }
+    uint8_t get_screen() const { return _osd.get_screen(); }
+    void draw_screen() { _osd.draw_screen(); }
+
+    // get semaphore for thread-safe access from scripting
+    HAL_Semaphore &get_semaphore() { return _osd.get_semaphore(); }
+#endif
 
     AP_OSD * get_osd()
     {
@@ -67,7 +85,7 @@ protected:
     // get font choice
     uint8_t get_font_num(void) const
     {
-        return (uint8_t)_osd.font_num.get();
+        return _osd.font_num;
     }
 
     //check option
@@ -179,6 +197,22 @@ protected:
     static const uint8_t SYM_FENCE_DISABLED = 0xF6;
     static const uint8_t SYM_RNGFD = 0xF7;
     static const uint8_t SYM_LQ = 0xF8;
+    static const uint8_t SYM_WATT = 0xAE;
+    static const uint8_t SYM_WH = 0xAB;
+    static const uint8_t SYM_DB = 0xF9;
+    static const uint8_t SYM_DBM = 0xFA;
+    static const uint8_t SYM_SNR = 0xFB;
+    static const uint8_t SYM_ANT = 0xFC;
+    static const uint8_t SYM_ARROW_RIGHT = 0xFD;
+    static const uint8_t SYM_ARROW_LEFT = 0xFE;
+    static const uint8_t SYM_G = 0xDF;
+    static const uint8_t SYM_BATT_UNKNOWN = 0x97;
+    static const uint8_t SYM_ROLL = 0xA9;
+    static const uint8_t SYM_PITCH = 0xAF;
+    static const uint8_t SYM_DPS = 0xAA;
+    static const uint8_t SYM_HEADING = 0x89;
+    static const uint8_t SYM_RADIUS = 0x7A;
+    static const uint8_t SYM_FLAP = 0x23;
 
     static const uint8_t SYM_SIDEBAR_R_ARROW = 0x09;
     static const uint8_t SYM_SIDEBAR_L_ARROW = 0x0A;
@@ -285,5 +319,21 @@ protected:
         SYM_SIDEBAR_H,
         SYM_SIDEBAR_I,
         SYM_SIDEBAR_J,
+        SYM_WATT,
+        SYM_WH,
+        SYM_DB,
+        SYM_DBM,
+        SYM_SNR,
+        SYM_ANT,
+        SYM_ARROW_RIGHT,
+        SYM_ARROW_LEFT,
+        SYM_G,
+        SYM_BATT_UNKNOWN,
+        SYM_ROLL,
+        SYM_PITCH,
+        SYM_DPS,
+        SYM_HEADING,
+        SYM_RADIUS,
+        SYM_FLAP,
     };
 };

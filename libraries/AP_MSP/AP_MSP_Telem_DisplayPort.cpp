@@ -31,14 +31,52 @@ MSPCommandResult AP_MSP_Telem_DisplayPort::msp_process_out_fc_variant(sbuf_t *ds
     if (msp == nullptr) {
         return MSP_RESULT_ERROR;
     }
-    // do we use backend specific symbols table?
-    if (msp->is_option_enabled(AP_MSP::Option::DISPLAYPORT_BTFL_SYMBOLS)) {
+    // report the flight controller identifier matching the selected OSD symbol
+    // table. A betaflight-style MSP VTX (e.g. HDZero) only runs its config
+    // handshake against a "BTFL" FC, so selecting BTFL symbols also enables
+    // MSP VTX control.
+    if (msp->is_option_enabled(AP_MSP::Option::DISPLAYPORT_INAV_SYMBOLS)) {
+        sbuf_write_data(dst, INAV_IDENTIFIER, FLIGHT_CONTROLLER_IDENTIFIER_LENGTH);
+    } else if (msp->is_option_enabled(AP_MSP::Option::DISPLAYPORT_BTFL_SYMBOLS)) {
         sbuf_write_data(dst, BETAFLIGHT_IDENTIFIER, FLIGHT_CONTROLLER_IDENTIFIER_LENGTH);
     } else {
         sbuf_write_data(dst, ARDUPILOT_IDENTIFIER, FLIGHT_CONTROLLER_IDENTIFIER_LENGTH);
     }
 
     return MSP_RESULT_ACK;
+}
+
+bool AP_MSP_Telem_DisplayPort::is_scheduler_enabled() const
+{
+#if AP_MSP_VIDEOTX_ENABLED
+    return AP::vtx().get_enabled();
+#else
+    return false;
+#endif
+}
+
+bool AP_MSP_Telem_DisplayPort::is_packet_ready(uint8_t idx, bool queue_empty)
+{
+    switch (idx) {
+#if AP_MSP_VIDEOTX_ENABLED
+    case VTX_PARAMETERS:    // VTX control
+        return AP::vtx().get_enabled();
+#endif
+    default:
+        return false;
+    }
+}
+
+bool AP_MSP_Telem_DisplayPort::init_uart()
+{
+    if (_msp_port.uart != nullptr)  {
+        // re-init port here for use in this thread
+        // displayport needs a bigger tx buffer
+        // rx buffer can be small for we mostly write
+        _msp_port.uart->begin(0, 256, 768);
+        return true;
+    }
+    return false;
 }
 
 #endif //HAL_WITH_MSP_DISPLAYPORT

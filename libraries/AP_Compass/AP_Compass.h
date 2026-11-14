@@ -1,5 +1,7 @@
 #pragma once
 
+#include "AP_Compass_config.h"
+
 #include <inttypes.h>
 
 #include <AP_Common/AP_Common.h>
@@ -21,23 +23,13 @@
 #define AP_COMPASS_MOT_COMP_CURRENT     0x02
 #define AP_COMPASS_MOT_COMP_PER_MOTOR   0x03
 
-// setup default mag orientation for some board types
 #ifndef MAG_BOARD_ORIENTATION
-#if CONFIG_HAL_BOARD == HAL_BOARD_LINUX && CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BEBOP
-# define MAG_BOARD_ORIENTATION ROTATION_YAW_90
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX && (CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ERLEBRAIN2 || \
-      CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_PXFMINI)
-# define MAG_BOARD_ORIENTATION ROTATION_YAW_270
-#else
-# define MAG_BOARD_ORIENTATION ROTATION_NONE
-#endif
+#define MAG_BOARD_ORIENTATION ROTATION_NONE
 #endif
 
-#ifndef COMPASS_CAL_ENABLED
-#define COMPASS_CAL_ENABLED !defined(HAL_BUILD_AP_PERIPH)
+#ifndef COMPASS_MOT_ENABLED
+#define COMPASS_MOT_ENABLED 1
 #endif
-#define COMPASS_MOT_ENABLED !defined(HAL_BUILD_AP_PERIPH)
-#define COMPASS_LEARN_ENABLED !defined(HAL_BUILD_AP_PERIPH)
 
 // define default compass calibration fitness and consistency checks
 #define AP_COMPASS_CALIBRATION_FITNESS_DEFAULT 16.0f
@@ -77,12 +69,12 @@ class CompassLearn;
 class Compass
 {
 friend class AP_Compass_Backend;
+friend class AP_Compass_DroneCAN;
 public:
     Compass();
 
     /* Do not allow copies */
-    Compass(const Compass &other) = delete;
-    Compass &operator=(const Compass&) = delete;
+    CLASS_NO_COPY(Compass);
 
     // get singleton instance
     static Compass *get_singleton() {
@@ -96,7 +88,7 @@ public:
     /// @returns    True if the compass was initialized OK, false if it was not
     ///             found or is not functioning.
     ///
-    void init();
+    __INITFUNC__ void init();
 
     /// Read the compass and update the mag_ variables.
     ///
@@ -130,17 +122,16 @@ public:
     /// @param  offsets             Offsets to the raw mag_ values in milligauss.
     ///
     void set_and_save_offsets(uint8_t i, const Vector3f &offsets);
+#if AP_COMPASS_DIAGONALS_ENABLED
     void set_and_save_diagonals(uint8_t i, const Vector3f &diagonals);
     void set_and_save_offdiagonals(uint8_t i, const Vector3f &diagonals);
+#endif
     void set_and_save_scale_factor(uint8_t i, float scale_factor);
     void set_and_save_orientation(uint8_t i, Rotation orientation);
 
     /// Saves the current offset x/y/z values for one or all compasses
     ///
     /// @param  i                   compass instance
-    ///
-    /// This should be invoked periodically to save the offset values maintained by
-    /// ::learn_offsets.
     ///
     void save_offsets(uint8_t i);
     void save_offsets(void);
@@ -158,9 +149,6 @@ public:
     /// Return true if we have set a scale factor for a compass
     bool have_scale_factor(uint8_t i) const;
 
-    // compass calibrator interface
-    void cal_update();
-
 #if COMPASS_MOT_ENABLED
     // per-motor calibration access
     void per_motor_calibration_start(void) {
@@ -174,6 +162,10 @@ public:
     }
 #endif
 
+#if COMPASS_CAL_ENABLED
+    // compass calibrator interface
+    void cal_update();
+
     // start_calibration_all will only return false if there are no
     // compasses to calibrate.
     bool start_calibration_all(bool retry=false, bool autosave=false, float delay_sec=0.0f, bool autoreboot = false);
@@ -183,22 +175,28 @@ public:
     bool compass_cal_requires_reboot() const { return _cal_requires_reboot; }
     bool is_calibrating() const;
 
-    // indicate which bit in LOG_BITMASK indicates we should log compass readings
-    void set_log_bit(uint32_t log_bit) { _log_bit = log_bit; }
-
+#if HAL_MAVLINK_BINDINGS_ENABLED
     /*
       handle an incoming MAG_CAL command
     */
-    MAV_RESULT handle_mag_cal_command(const mavlink_command_long_t &packet);
+    MAV_RESULT handle_mag_cal_command(const mavlink_command_int_t &packet);
 
     bool send_mag_cal_progress(const class GCS_MAVLINK& link);
     bool send_mag_cal_report(const class GCS_MAVLINK& link);
+#endif  // HAL_MAVLINK_BINDINGS_ENABLED
+#endif  // COMPASS_CAL_ENABLED
+
+    // indicate which bit in LOG_BITMASK indicates we should log compass readings
+    void set_log_bit(uint32_t log_bit) { _log_bit = log_bit; }
+
+    void Write_Compass(void);
+    void Write_Compass_instance(uint64_t time_us, uint8_t mag_instance);
 
     // check if the compasses are pointing in the same direction
     bool consistent() const;
 
     /// Return the health of a compass
-    bool healthy(uint8_t i) const { return _get_state(Priority(i)).healthy; }
+    bool healthy(uint8_t i) const;
     bool healthy(void) const { return healthy(_first_usable); }
     uint8_t get_healthy_mask() const;
 
@@ -209,14 +207,24 @@ public:
     const Vector3f &get_offsets(uint8_t i) const { return _get_state(Priority(i)).offset; }
     const Vector3f &get_offsets(void) const { return get_offsets(_first_usable); }
 
+#if AP_COMPASS_DIAGONALS_ENABLED
     const Vector3f &get_diagonals(uint8_t i) const { return _get_state(Priority(i)).diagonals; }
     const Vector3f &get_diagonals(void) const { return get_diagonals(_first_usable); }
 
     const Vector3f &get_offdiagonals(uint8_t i) const { return _get_state(Priority(i)).offdiagonals; }
     const Vector3f &get_offdiagonals(void) const { return get_offdiagonals(_first_usable); }
+#endif  // AP_COMPASS_DIAGONALS_ENABLED
 
     // learn offsets accessor
-    bool learn_offsets_enabled() const { return _learn == LEARN_INFLIGHT; }
+    bool learn_offsets_enabled() const { return _learn == LearnType::INFLIGHT; }
+
+#if AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
+    // if COMPASS_LEARN==COPY_FROM_EKF, save the offsets the EKF has
+    // learned into the COMPASS_OFS parameters.  Called from
+    // AP_Arming::disarm(); note that this *must* happen before the
+    // vehicle calls hal.util->set_soft_armed(false).
+    void save_ekf_learned_offsets();
+#endif  // AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
 
     /// return true if the compass should be used for yaw calculations
     bool use_for_yaw(uint8_t i) const;
@@ -233,10 +241,27 @@ public:
     bool auto_declination_enabled() const { return _auto_declination != 0; }
 
     // set overall board orientation
-    void set_board_orientation(enum Rotation orientation, Matrix3f* custom_rotation = nullptr) {
+    void set_board_orientation(enum Rotation orientation) {
         _board_orientation = orientation;
-        _custom_rotation = custom_rotation;
     }
+
+    // get overall board orientation
+    enum Rotation get_board_orientation(void) const {
+        return _board_orientation;
+    }
+
+#if AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
+    // true if the field published for this instance reaches us in the
+    // body frame - that is, AP_Compass_Backend::rotate_field() applies
+    // no rotation to it.  An offset computed in the body frame is only
+    // meaningful for such an instance; see AP_AHRS_SIM::get_mag_offsets().
+    bool instance_is_unrotated(uint8_t i) const;
+
+    // device id of the compass at this priority index.  Used to find
+    // the simulated sensor a priority index corresponds to; see
+    // AP_AHRS_SIM::get_mag_offsets().  Zero if there is none.
+    uint32_t get_dev_id(uint8_t i) const;
+#endif
 
     /// Set the motor compensation type
     ///
@@ -304,46 +329,57 @@ public:
 
     static const struct AP_Param::GroupInfo var_info[];
 
-    enum LearnType {
-        LEARN_NONE=0,
-        LEARN_INTERNAL=1,
-        LEARN_EKF=2,
-        LEARN_INFLIGHT=3
+    enum class LearnType {
+        NONE          = 0,
+        // INTERNAL   = 1,
+        COPY_FROM_EKF = 2,
+        INFLIGHT      = 3,
     };
 
     // return the chosen learning type
-    enum LearnType get_learn_type(void) const {
-        return (enum LearnType)_learn.get();
+    LearnType get_learn_type(void) const {
+        const LearnType learn_type = (LearnType)_learn.get();
+#if !AP_COMPASS_LEARN_COPY_FROM_EKF_ENABLED
+        if (learn_type == LearnType::COPY_FROM_EKF) {
+            // there is no code compiled in to save the EKF's offsets,
+            // so report the feature as off rather than letting callers
+            // believe a learning type is selected which cannot run
+            return LearnType::NONE;
+        }
+#endif
+        return learn_type;
     }
 
     // set the learning type
-    void set_learn_type(enum LearnType type, bool save) {
+    void set_learn_type(LearnType type, bool save) {
         if (save) {
-            _learn.set_and_save((int8_t)type);
+            _learn.set_and_save(type);
         } else {
-            _learn.set((int8_t)type);
+            _learn.set(type);
         }
     }
     
     // return maximum allowed compass offsets
     uint16_t get_offsets_max(void) const {
-        return (uint16_t)_offset_max.get();
+        return _offset_max;
     }
 
-    uint8_t get_filter_range() const { return uint8_t(_filter_range.get()); }
+    uint8_t get_filter_range() const { return _filter_range; }
 
+#if AP_COMPASS_CALIBRATION_FIXED_YAW_ENABLED
     /*
       fast compass calibration given vehicle position and yaw
      */
-    MAV_RESULT mag_cal_fixed_yaw(float yaw_deg, uint8_t compass_mask,
-                                 float lat_deg, float lon_deg,
-                                 bool force_use=false);
+    bool mag_cal_fixed_yaw(float yaw_deg, uint8_t compass_mask,
+                           float lat_deg, float lon_deg,
+                           bool force_use=false);
+#endif
 
-#if HAL_MSP_COMPASS_ENABLED
+#if AP_COMPASS_MSP_ENABLED
     void handle_msp(const MSP::msp_compass_data_message_t &pkt);
 #endif
 
-#if HAL_EXTERNAL_AHRS_ENABLED
+#if AP_COMPASS_EXTERNALAHRS_ENABLED
     void handle_external(const AP_ExternalAHRS::mag_data_message_t &pkt);
 #endif
 
@@ -368,13 +404,17 @@ private:
     /// @param  dev_id                   Dev ID of compass to register against
     ///
     /// @return instance number saved against the dev id or first available empty instance number
-    bool register_compass(int32_t dev_id, uint8_t& instance);
+    bool register_compass(uint32_t dev_id, uint8_t& instance) WARN_IF_UNUSED;
 
     // load backend drivers
-    bool _add_backend(AP_Compass_Backend *backend);
-    void _probe_external_i2c_compasses(void);
-    void _detect_backends(void);
+    __INITFUNC__ void _probe_external_i2c_compasses(void);
+    __INITFUNC__ void _detect_backends(void);
+    __INITFUNC__ void probe_i2c_spi_compasses(void);
+#if AP_COMPASS_DRONECAN_ENABLED
+    void probe_dronecan_compasses(void);
+#endif
 
+#if COMPASS_CAL_ENABLED
     // compass cal
     void _update_calibration_trampoline();
     bool _accept_calibration(uint8_t i);
@@ -384,55 +424,129 @@ private:
     uint8_t _get_cal_mask();
     bool _start_calibration(uint8_t i, bool retry=false, float delay_sec=0.0f);
     bool _start_calibration_mask(uint8_t mask, bool retry=false, bool autosave=false, float delay_sec=0.0f, bool autoreboot=false);
-    bool _auto_reboot() const { return _compass_cal_autoreboot; }
+#if HAL_MAVLINK_BINDINGS_ENABLED
     Priority next_cal_progress_idx[MAVLINK_COMM_NUM_BUFFERS];
     Priority next_cal_report_idx[MAVLINK_COMM_NUM_BUFFERS];
+#endif
+#endif  // COMPASS_CAL_ENABLED
 
-    // see if we already have probed a i2c driver by bus number and address
-    bool _have_i2c_driver(uint8_t bus_num, uint8_t address) const;
+    // see if we already have probed a i2c sensor by bus number and address
+    bool _i2c_sensor_is_registered(uint8_t bus_num, uint8_t address) const;
 
+#if AP_COMPASS_CALIBRATION_FIXED_YAW_ENABLED
     /*
       get mag field with the effects of offsets, diagonals and
       off-diagonals removed
     */
     bool get_uncorrected_field(uint8_t instance, Vector3f &field) const;
-    
+#endif
+
 #if COMPASS_CAL_ENABLED
     //keep track of which calibrators have been saved
     RestrictIDTypeArray<bool, COMPASS_MAX_INSTANCES, Priority> _cal_saved;
     bool _cal_autosave;
-#endif
 
     //autoreboot after compass calibration
     bool _compass_cal_autoreboot;
     bool _cal_requires_reboot;
     bool _cal_has_run;
+#endif  // COMPASS_CAL_ENABLED
 
-    // enum of drivers for COMPASS_TYPEMASK
+    // enum of drivers for COMPASS_DISBLMSK
     enum DriverType {
+#if AP_COMPASS_HMC5843_ENABLED
         DRIVER_HMC5843  =0,
+#endif
+#if AP_COMPASS_LSM303D_ENABLED
         DRIVER_LSM303D  =1,
+#endif
+#if AP_COMPASS_AK8963_ENABLED
         DRIVER_AK8963   =2,
+#endif
+#if AP_COMPASS_BMM150_ENABLED
         DRIVER_BMM150   =3,
+#endif
+#if AP_COMPASS_LSM9DS1_ENABLED
         DRIVER_LSM9DS1  =4,
+#endif
+#if AP_COMPASS_LIS3MDL_ENABLED
         DRIVER_LIS3MDL  =5,
+#endif
+#if AP_COMPASS_AK09916_ENABLED
         DRIVER_AK09916  =6,
+#endif
+#if AP_COMPASS_IST8310_ENABLED
         DRIVER_IST8310  =7,
+#endif
+#if AP_COMPASS_ICM20948_ENABLED
         DRIVER_ICM20948 =8,
+#endif
+#if AP_COMPASS_MMC3416_ENABLED
         DRIVER_MMC3416  =9,
+#endif
+#if AP_COMPASS_DRONECAN_ENABLED
         DRIVER_UAVCAN   =11,
+#endif
+#if AP_COMPASS_QMC5883L_ENABLED
         DRIVER_QMC5883L =12,
+#endif
+#if AP_COMPASS_SITL_ENABLED
         DRIVER_SITL     =13,
+#endif
+#if AP_COMPASS_MAG3110_ENABLED
         DRIVER_MAG3110  =14,
+#endif
+#if AP_COMPASS_IST8308_ENABLED
         DRIVER_IST8308  =15,
+#endif
+#if AP_COMPASS_RM3100_ENABLED
 		DRIVER_RM3100   =16,
+#endif
+#if AP_COMPASS_MSP_ENABLED
         DRIVER_MSP      =17,
-        DRIVER_SERIAL   =18,
+#endif
+#if AP_COMPASS_EXTERNALAHRS_ENABLED
+        DRIVER_EXTERNALAHRS   =18,
+#endif
+#if AP_COMPASS_MMC5XX3_ENABLED
         DRIVER_MMC5XX3  =19,
-    };
+#endif
+#if AP_COMPASS_QMC5883P_ENABLED
+        DRIVER_QMC5883P =20,
+#endif
+#if AP_COMPASS_BMM350_ENABLED
+        DRIVER_BMM350   =21,
+#endif
+#if AP_COMPASS_IIS2MDC_ENABLED
+        DRIVER_IIS2MDC  =22,
+#endif
+        // DRIVER_LIS2MDL  =23,  // DO NOT re-use this ID; same sensor as IIS2MDC
+#if AP_COMPASS_AF9838_ENABLED
+        DRIVER_AF9838   =24,
+#endif
+#if AP_COMPASS_AK09940A_ENABLED
+        DRIVER_AK09940A =25,
+#endif
+};
 
     bool _driver_enabled(enum DriverType driver_type);
-    
+    void add_backend(DriverType driver_type, AP_Compass_Backend *backend);
+
+    // helper probe functions
+    void probe_ak09916_via_icm20948(uint8_t i2c_bus, uint8_t ak09916_addr, uint8_t icm20948_addr, bool external, Rotation rotation);
+    void probe_ak09916_via_icm20948(uint8_t ins_instance, Rotation rotation);
+    void probe_ak8963_via_mpu9250(uint8_t imu_instance, Rotation rotation);
+
+    using probe_i2c_dev_probefn_t = AP_Compass_Backend* (*)(AP_HAL::OwnPtr<AP_HAL::Device>, bool, Rotation);
+    void probe_i2c_dev(DriverType driver_type, probe_i2c_dev_probefn_t probefn, uint8_t i2c_bus, uint8_t i2c_addr, bool external, Rotation rotation);
+
+    using probe_spi_dev_probefn_t = AP_Compass_Backend* (*)(AP_HAL::OwnPtr<AP_HAL::Device>, bool, Rotation);
+    void probe_spi_dev(DriverType driver_type, probe_spi_dev_probefn_t probefn, const char *name, bool external, Rotation rotation);
+    // short-lived method which expects a probe function that doesn't
+    // offer the ability to specify an external rotation
+    using probe_spi_dev_noexternal_probefn_t = AP_Compass_Backend* (*)(AP_HAL::OwnPtr<AP_HAL::Device>, Rotation);
+    void probe_spi_dev(DriverType driver_type, probe_spi_dev_noexternal_probefn_t probefn, const char *name, Rotation rotation);
+
     // backend objects
     AP_Compass_Backend *_backends[COMPASS_MAX_BACKEND];
     uint8_t     _backend_count;
@@ -447,16 +561,10 @@ private:
     uint8_t     _unreg_compass_count;
 
     // settable parameters
-    AP_Int8 _learn;
+    AP_Enum<LearnType> _learn;
 
     // board orientation from AHRS
     enum Rotation _board_orientation = ROTATION_NONE;
-
-    // custom board rotation matrix
-    Matrix3f* _custom_rotation;
-
-    // custom external compass rotation matrix
-    Matrix3f* _custom_external_rotation;
 
     // declination in radians
     AP_Float    _declination;
@@ -474,11 +582,6 @@ private:
     // automatic compass orientation on calibration
     AP_Int8     _rotate_auto;
 
-    // custom compass rotation
-    AP_Float    _custom_roll;
-    AP_Float    _custom_pitch;
-    AP_Float    _custom_yaw;
-    
     // throttle expressed as a percentage from 0 ~ 1.0, used for motor compensation
     float       _thr;
 
@@ -489,18 +592,20 @@ private:
         Compass::Priority priority;
         AP_Int8     orientation;
         AP_Vector3f offset;
+#if AP_COMPASS_DIAGONALS_ENABLED
         AP_Vector3f diagonals;
         AP_Vector3f offdiagonals;
+#endif
         AP_Float    scale_factor;
 
         // device id detected at init.
         // saved to eeprom when offsets are saved allowing ram &
         // eeprom values to be compared as consistency check
-        AP_Int32    dev_id;
+        AP_UInt32   dev_id;
         // Initialised when compass is detected
-        int32_t detected_dev_id;
+        uint32_t detected_dev_id;
         // Initialised at boot from saved devid
-        int32_t expected_dev_id;
+        uint32_t expected_dev_id;
 
         // factors multiplied by throttle and added to compass outputs
         AP_Vector3f motor_compensation;
@@ -543,7 +648,7 @@ private:
 #endif
     // Update Priority List for Mags, by default, we just
     // load them as they come up the first time
-    Priority _update_priority_list(int32_t dev_id);
+    Priority _update_priority_list(uint32_t dev_id);
     
     // method to check if the mag with the devid 
     // is a replacement mag
@@ -556,17 +661,19 @@ private:
     //Create Arrays to be accessible by Priority only
     RestrictIDTypeArray<AP_Int8, COMPASS_MAX_INSTANCES, Priority> _use_for_yaw;
 #if COMPASS_MAX_INSTANCES > 1
-    RestrictIDTypeArray<AP_Int32, COMPASS_MAX_INSTANCES, Priority> _priority_did_stored_list;
-    RestrictIDTypeArray<int32_t, COMPASS_MAX_INSTANCES, Priority> _priority_did_list;
+    RestrictIDTypeArray<AP_UInt32, COMPASS_MAX_INSTANCES, Priority> _priority_did_stored_list;
+    RestrictIDTypeArray<uint32_t, COMPASS_MAX_INSTANCES, Priority> _priority_did_list;
 #endif
 
-    AP_Int16 _offset_max;
+    AP_UInt16 _offset_max;
 
     // bitmask of options
     enum class Option : uint16_t {
         CAL_REQUIRE_GPS = (1U<<0),
+        ALLOW_DRONECAN_AUTO_REPLACEMENT = (1U<<1),
     };
-    AP_Int16 _options;
+    bool option_set(Option opt) const { return (_options.get() & uint16_t(opt)) != 0; }
+    AP_UInt16 _options;
 
 #if COMPASS_CAL_ENABLED
     RestrictIDTypeArray<CompassCalibrator*, COMPASS_MAX_INSTANCES, Priority> _calibrator;
@@ -580,15 +687,15 @@ private:
     AP_Float _calibration_threshold;
 
     // mask of driver types to not load. Bit positions match DEVTYPE_ in backend
-    AP_Int32 _driver_type_mask;
+    AP_UInt32 _driver_type_mask;
 
 #if COMPASS_MAX_UNREG_DEV
     // Put extra dev ids detected
-    AP_Int32 extra_dev_id[COMPASS_MAX_UNREG_DEV];
+    AP_UInt32 extra_dev_id[COMPASS_MAX_UNREG_DEV];
     uint32_t _previously_unreg_mag[COMPASS_MAX_UNREG_DEV];
 #endif
 
-    AP_Int8 _filter_range;
+    AP_UInt8 _filter_range;
 
     CompassLearn *learn;
     bool learn_allocated;
@@ -603,10 +710,12 @@ private:
 
     bool _cal_thread_started;
 
-#if HAL_MSP_COMPASS_ENABLED
+#if AP_COMPASS_MSP_ENABLED
     uint8_t msp_instance_mask;
 #endif
     bool init_done;
+
+    bool suppress_devid_save;
 
     uint8_t _first_usable; // first compass usable based on COMPASSx_USE param
 };

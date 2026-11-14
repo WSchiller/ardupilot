@@ -16,9 +16,7 @@
 
 #include <AP_HAL/AP_HAL_Boards.h>
 
-#ifndef HAL_BUTTON_ENABLED
-#define HAL_BUTTON_ENABLED 1
-#endif
+#include "AP_Button_config.h"
 
 #if HAL_BUTTON_ENABLED
 
@@ -37,8 +35,7 @@ public:
     AP_Button(void);
 
     /* Do not allow copies */
-    AP_Button(const AP_Button &other) = delete;
-    AP_Button &operator=(const AP_Button&) = delete;
+    CLASS_NO_COPY(AP_Button);
 
     static const struct AP_Param::GroupInfo var_info[];
 
@@ -62,13 +59,13 @@ private:
 
     AP_Int8 enable;
     AP_Int8 pin[AP_BUTTON_NUM_PINS];
-    AP_Int8 options[AP_BUTTON_NUM_PINS];  // if a pin's bit is set then it uses PWM assertion
+    AP_UInt8 options[AP_BUTTON_NUM_PINS];  // if a pin's bit is set then it uses PWM assertion
 
     bool is_pwm_input(uint8_t n) const {
-        return ((uint8_t)options[n].get() & (1U<<0)) != 0;
+        return (options[n] & (1U<<0)) != 0;
     }
     bool is_input_inverted(uint8_t n) const {
-        return ((uint8_t)options[n].get() & (1U<<1)) != 0;
+        return (options[n] & (1U<<1)) != 0;
     }
 
     AP_Int16 pin_func[AP_BUTTON_NUM_PINS];  // from the RC_Channel functions
@@ -117,7 +114,7 @@ private:
     uint32_t last_report_ms;
 
     // has the timer been installed?
-    bool initialised:1;
+    bool initialised;
     
     // called by timer thread
     void timer_update(void);

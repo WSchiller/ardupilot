@@ -19,12 +19,15 @@
 
 #include "UARTDriver.h"
 
-#if defined(__CYGWIN__) || defined(__CYGWIN64__) || defined(__APPLE__)
+#if defined(__CYGWIN__) || defined(__CYGWIN64__) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__EMSCRIPTEN__)
 #define USE_TERMIOS
 #endif
 
 #ifdef USE_TERMIOS
 #include <termios.h>
+#if defined(__APPLE__)
+#include <IOKit/serial/ioss.h>
+#endif
 #else
 #include <asm/ioctls.h>
 #include <asm/termbits.h>
@@ -41,10 +44,16 @@ bool HALSITL::UARTDriver::set_speed(int speed) const
         return false;
     }
 #ifdef USE_TERMIOS
+#if defined(__APPLE__)
+    if (ioctl(_fd, IOSSIOSPEED, &speed) == -1) {
+        return false;
+    }
+#else
     struct termios t;
     tcgetattr(_fd, &t);
     cfsetspeed(&t, speed);
     tcsetattr(_fd, TCSANOW, &t);
+#endif
 #else
     struct termios2 tc;
     memset(&tc, 0, sizeof(tc));
@@ -68,11 +77,12 @@ bool HALSITL::UARTDriver::set_speed(int speed) const
     return true;
 }
 
-void HALSITL::UARTDriver::configure_parity(uint8_t v)
+void HALSITL::UARTDriver::_configure_parity(uint8_t v)
 {
     if (_fd < 0) {
         return;
     }
+    UARTDriver::parity = v;
 #ifdef USE_TERMIOS
     struct termios t;
 
@@ -105,8 +115,9 @@ void HALSITL::UARTDriver::configure_parity(uint8_t v)
 #endif
 }
 
-void HALSITL::UARTDriver::set_stop_bits(int n)
+void HALSITL::UARTDriver::_set_stop_bits(int n)
 {
+    _stop_bits = n;
     if (_fd < 0) {
         return;
     }

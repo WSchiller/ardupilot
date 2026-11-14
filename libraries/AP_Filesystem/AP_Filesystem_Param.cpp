@@ -15,6 +15,11 @@
 /*
   ArduPilot filesystem interface for parameters
  */
+
+#include "AP_Filesystem_config.h"
+
+#if AP_FILESYSTEM_PARAM_ENABLED
+
 #include "AP_Filesystem.h"
 #include "AP_Filesystem_Param.h"
 #include <AP_Param/AP_Param.h>
@@ -24,9 +29,13 @@
 #define PACKED_NAME "param.pck"
 
 extern const AP_HAL::HAL& hal;
-extern int errno;
 
-int AP_Filesystem_Param::open(const char *fname, int flags)
+// QURT HAL already has a declaration of errno in errno.h
+#if CONFIG_HAL_BOARD != HAL_BOARD_QURT
+extern int errno;
+#endif
+
+int AP_Filesystem_Param::open(const char *fname, int flags, bool allow_absolute_path)
 {
     if (!check_file_name(fname)) {
         errno = ENOENT;
@@ -45,7 +54,7 @@ int AP_Filesystem_Param::open(const char *fname, int flags)
     }
     struct rfile &r = file[idx];
     if (read_only) {
-        r.cursors = new cursor[num_cursors];
+        r.cursors = NEW_NOTHROW cursor[num_cursors];
         if (r.cursors == nullptr) {
             errno = ENOMEM;
             return -1;
@@ -53,13 +62,15 @@ int AP_Filesystem_Param::open(const char *fname, int flags)
     }
     r.file_ofs = 0;
     r.open = true;
+    r.with_defaults = false;
     r.start = 0;
     r.count = 0;
     r.read_size = 0;
+    r.file_size = 0;
     r.writebuf = nullptr;
     if (!read_only) {
         // setup for upload
-        r.writebuf = new ExpandingString();
+        r.writebuf = NEW_NOTHROW ExpandingString();
         if (r.writebuf == nullptr) {
             close(idx);
             errno = ENOMEM;
@@ -93,6 +104,18 @@ int AP_Filesystem_Param::open(const char *fname, int flags)
             c = strchr(c, '&');
             continue;
         }
+#if AP_PARAM_DEFAULTS_ENABLED
+        if (strncmp(c, "withdefaults=", 13) == 0) {
+            uint32_t v = strtoul(c+13, nullptr, 10);
+            if (v > 1) {
+                goto failed;
+            }
+            r.with_defaults = v == 1;
+            c += 13;
+            c = strchr(c, '&');
+            continue;
+        }
+#endif
     }
 
     return idx;
@@ -127,18 +150,18 @@ int AP_Filesystem_Param::close(int fd)
 /*
   packed format:
     file header:
-      uint16_t magic = 0x671b
+      uint16_t magic = 0x671b or  0x671c for included default values
       uint16_t num_params
       uint16_t total_params
 
     per-parameter:
 
     uint8_t type:4;         // AP_Param type NONE=0, INT8=1, INT16=2, INT32=3, FLOAT=4
-    uint8_t flags:4;        // for future use
+    uint8_t flags:4;        // bit 0: includes default value for this param
     uint8_t common_len:4;   // number of name bytes in common with previous entry, 0..15
     uint8_t name_len:4;     // non-common length of param name -1 (0..15)
     uint8_t name[name_len]; // name
-    uint8_t data[];         // value, length given by variable type
+    uint8_t data[];         // value, length given by variable type, data length doubled if default is included
 
     Any leading zero bytes after the header should be discarded as pad
     bytes. Pad bytes are used to ensure that a parameter data[] field
@@ -154,20 +177,26 @@ uint8_t AP_Filesystem_Param::pack_param(const struct rfile &r, struct cursor &c,
     name[AP_MAX_NAME_SIZE] = 0;
     enum ap_var_type ptype;
     AP_Param *ap;
+    float default_val;
 
     if (c.token_ofs == 0) {
         c.idx = 0;
-        ap = AP_Param::first(&c.token, &ptype);
+        ap = AP_Param::first(&c.token, &ptype, &default_val);
         uint16_t idx = 0;
         while (idx < r.start && ap) {
-            ap = AP_Param::next_scalar(&c.token, &ptype);
+            ap = AP_Param::next_scalar(&c.token, &ptype, &default_val);
             idx++;
         }
     } else {
         c.idx++;
-        ap = AP_Param::next_scalar(&c.token, &ptype);
+        ap = AP_Param::next_scalar(&c.token, &ptype, &default_val);
     }
     if (ap == nullptr || (r.count && c.idx >= r.count)) {
+        if (r.count == 0 && c.idx != AP_Param::count_parameters()) {
+            // the parameter count is incorrect, invalidate so a
+            // repeated param download avoids an error
+            AP_Param::invalidate_count();
+        }
         return 0;
     }
     ap->copy_name_token(c.token, name, AP_MAX_NAME_SIZE, true);
@@ -180,10 +209,20 @@ uint8_t AP_Filesystem_Param::pack_param(const struct rfile &r, struct cursor &c,
         pname++;
         last_name++;
     }
-    const uint8_t name_len = strlen(pname);
+    uint8_t name_len = strlen(pname);
+    if (name_len == 0) {
+        name_len = 1;
+        common_len--;
+        pname--;
+    }
+#if AP_PARAM_DEFAULTS_ENABLED
+    const bool add_default = r.with_defaults && !is_equal(ap->cast_to_float(ptype), default_val);
+#else
+    const bool add_default = false;
+#endif
     const uint8_t type_len = AP_Param::type_size(ptype);
-    uint8_t packed_len = type_len + name_len + 2;
-    const uint8_t flags = 0;
+    uint8_t packed_len = type_len + name_len + 2 + (add_default ? type_len : 0);
+    const uint8_t flags = add_default;
 
     /*
       see if we need to add padding to ensure that a data field never
@@ -205,6 +244,36 @@ uint8_t AP_Filesystem_Param::pack_param(const struct rfile &r, struct cursor &c,
     buf[1] = common_len | ((name_len-1)<<4);
     memcpy(&buf[2], pname, name_len);
     memcpy(&buf[2+name_len], ap, type_len);
+#if AP_PARAM_DEFAULTS_ENABLED
+    if (add_default) {
+        switch (ptype) {
+            case AP_PARAM_NONE:
+            case AP_PARAM_GROUP:
+                // should never happen...
+                break;
+            case AP_PARAM_INT8: {
+                const int32_t int8_default = default_val;
+                memcpy(&buf[2+name_len+type_len], &int8_default, type_len);
+                break;
+            }
+            case AP_PARAM_INT16: {
+                const int16_t int16_default = default_val;
+                memcpy(&buf[2+name_len+type_len], &int16_default, type_len);
+                break;
+            }
+            case AP_PARAM_INT32: {
+                const int32_t int32_default = default_val;
+                memcpy(&buf[2+name_len+type_len], &int32_default, type_len);
+                break;
+            }
+            case AP_PARAM_FLOAT:
+            case AP_PARAM_VECTOR3F: {
+                memcpy(&buf[2+name_len+type_len], &default_val, type_len);
+                break;
+            }
+        }
+    }
+#endif
 
     strcpy(c.last_name, name);
 
@@ -300,6 +369,9 @@ int32_t AP_Filesystem_Param::read(int fd, void *buf, uint32_t count)
             hdr.num_params = r.count;
         }
         uint8_t n = MIN(sizeof(hdr) - r.file_ofs, count);
+        if (r.with_defaults) {
+            hdr.magic = pmagic_with_default;
+        }
         const uint8_t *b = (const uint8_t *)&hdr;
         memcpy(buf, &b[r.file_ofs], n);
         count -= n;
@@ -406,8 +478,8 @@ int AP_Filesystem_Param::stat(const char *name, struct stat *stbuf)
         return -1;
     }
     memset(stbuf, 0, sizeof(*stbuf));
-    // give fixed size to avoid needing to scan entire file
-    stbuf->st_size = 1024*1024;
+    // give size estimation to avoid needing to scan entire file
+    stbuf->st_size = AP_Param::count_parameters() * 12;
     return 0;
 }
 
@@ -438,6 +510,12 @@ int32_t AP_Filesystem_Param::write(int fd, const void *buf, uint32_t count)
         errno = EBADF;
         return -1;
     }
+    // The upload header stores the total file length in a uint16_t
+    const uint32_t max_file_size = UINT16_MAX;
+    if (count > max_file_size || r.file_ofs > max_file_size - count) {
+        errno = EINVAL;
+        return -1;
+    }
     struct header hdr;
     if (r.file_ofs == 0 && count >= sizeof(hdr)) {
         // pre-expand the buffer to the full size when we get the header
@@ -464,13 +542,15 @@ int32_t AP_Filesystem_Param::write(int fd, const void *buf, uint32_t count)
 }
 
 /*
-  parse incoming parameters
+  parse incoming parameters. If apply is false then only check that
+  every record is valid, without changing any parameters
  */
-bool AP_Filesystem_Param::param_upload_parse(const rfile &r, bool &need_retry)
+bool AP_Filesystem_Param::param_upload_parse(const rfile &r, bool apply, bool &need_retry)
 {
     need_retry = false;
 
     const uint8_t *b = (const uint8_t *)r.writebuf->get_string();
+    const uint8_t *buffer_start = b;
     uint32_t length = r.writebuf->get_length();
     struct header hdr;
     if (length < sizeof(hdr)) {
@@ -488,14 +568,25 @@ bool AP_Filesystem_Param::param_upload_parse(const rfile &r, bool &need_retry)
     char last_name[17] {};
 
     for (uint16_t i=0; i<hdr.num_params; i++) {
-        enum ap_var_type ptype = (enum ap_var_type)(b[0]&0x0F);
-        uint8_t flags = (enum ap_var_type)(b[0]>>4);
+        const uint32_t bytes_remaining = length - (b - buffer_start);
+        if (bytes_remaining < 2U) {
+            return false;
+        }
+        const uint8_t ptype = b[0]&0x0F;
+        if (ptype == AP_PARAM_NONE || ptype >= AP_PARAM_VECTOR3F) {
+            return false;
+        }
+        const uint8_t value_size = AP_Param::type_size((enum ap_var_type)ptype);
+        const uint8_t flags = b[0]>>4;
         if (flags != 0) {
             return false;
         }
         uint8_t common_len = b[1]&0xF;
         uint8_t name_len = (b[1]>>4)+1;
-        if (common_len + name_len > 16) {
+        if (common_len > strlen(last_name) || common_len + name_len > 16) {
+            return false;
+        }
+        if (2U + name_len + value_size > bytes_remaining) {
             return false;
         }
         char name[17];
@@ -509,15 +600,16 @@ bool AP_Filesystem_Param::param_upload_parse(const rfile &r, bool &need_retry)
 
         b += 2 + name_len;
 
+        if (!apply) {
+            b += value_size;
+            continue;
+        }
+
+        // assume that this write to the Param filesystem is coming
+        // via mavftp:
         AP_Param *p = AP_Param::find(name, &ptype2, &flags2);
-        if (p == nullptr) {
-            if (ptype == AP_PARAM_INT8) {
-                b++;
-            } else if (ptype == AP_PARAM_INT16) {
-                b += 2;
-            } else {
-                b += 4;
-            }
+        if (p == nullptr || !p->allow_set_via_mavlink(flags2)) {
+            b += value_size;
             continue;
         }
 
@@ -576,10 +668,14 @@ bool AP_Filesystem_Param::param_upload_parse(const rfile &r, bool &need_retry)
  */
 bool AP_Filesystem_Param::finish_upload(const rfile &r)
 {
+    bool need_retry;
+    // check whole upload first so a rejected upload leaves all parameters unchanged
+    if (!param_upload_parse(r, false, need_retry)) {
+        return false;
+    }
     uint8_t loops = 0;
     while (loops++ < 4) {
-        bool need_retry;
-        if (!param_upload_parse(r, need_retry)) {
+        if (!param_upload_parse(r, true, need_retry)) {
             return false;
         }
         if (!need_retry) {
@@ -588,3 +684,5 @@ bool AP_Filesystem_Param::finish_upload(const rfile &r)
     }
     return true;
 }
+
+#endif  // AP_FILESYSTEM_PARAM_ENABLED

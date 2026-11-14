@@ -5,14 +5,13 @@
  */
 #pragma once
 
-#include <AP_AHRS/AP_AHRS.h>
 #include <AP_NavEKF/AP_Nav_Common.h>              // definitions shared by inertial and ekf nav filters
 
 class AP_InertialNav
 {
 public:
     // Constructor
-    AP_InertialNav(AP_AHRS &ahrs) :
+    AP_InertialNav(class AP_AHRS &ahrs) :
         _ahrs_ekf(ahrs)
         {}
 
@@ -22,50 +21,55 @@ public:
     void        update(bool high_vibes = false);
 
     /**
-     * get_filter_status - returns filter status as a series of flags
-     */
-    nav_filter_status get_filter_status() const;
-
-    /**
-     * get_position - returns the current position relative to the home location in cm.
-     *
-     * the home location was set with AP_InertialNav::set_home_position(int32_t, int32_t)
+     * get_position_neu_cm - returns the current position relative to the EKF origin in cm.
      *
      * @return
      */
-    const Vector3f&    get_position() const;
+    const Vector3f&    get_position_neu_cm() const;
 
     /**
-     * get_velocity - returns the current velocity in cm/s
+     * get_position_xy_cm - returns the current x-y position relative to the EKF origin in cm.
+     *
+     * @return
+     */
+    const Vector2f&    get_position_xy_cm() const;
+
+    /**
+     * get_position_z_up_cm - returns the current z position relative to the EKF origin, frame z up, in cm.
+     * @return
+     */
+    float              get_position_z_up_cm() const;
+
+    /**
+     * get_velocity_neu_cms - returns the current velocity in cm/s
      *
      * @return velocity vector:
      *      		.x : latitude  velocity in cm/s
      * 				.y : longitude velocity in cm/s
      * 				.z : vertical  velocity in cm/s
      */
-    const Vector3f&    get_velocity() const;
+    const Vector3f&    get_velocity_neu_cms() const;
 
     /**
-     * get_speed_xy - returns the current horizontal speed in cm/s
+     * get_velocity_xy_cms - returns the current x-y velocity relative to the EKF origin in cm.
+     *
+     * @return
+     */
+    const Vector2f& get_velocity_xy_cms() const;
+
+    /**
+     * get_speed_xy_cms - returns the current horizontal speed in cm/s
      *
      * @returns the current horizontal speed in cm/s
      */
-    float        get_speed_xy() const;
+    float        get_speed_xy_cms() const;
 
     /**
-     * get_altitude - get latest altitude estimate in cm
-     * @return
-     */
-    float       get_altitude() const;
-
-    /**
-     * get_velocity_z - returns the current climbrate.
+     * get_velocity_z_up_cms - returns the current z-axis velocity, frame z-axis up, in cm/s
      *
-     * @see get_velocity().z
-     *
-     * @return climbrate in cm/s
+     * @return z-axis velocity, frame z-axis up, in cm/s
      */
-    float       get_velocity_z() const;
+    float       get_velocity_z_up_cms() const;
 
 private:
     Vector3f _relpos_cm;   // NEU

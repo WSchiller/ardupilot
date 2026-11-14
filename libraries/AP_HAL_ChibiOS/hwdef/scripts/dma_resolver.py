@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+
+# flake8: noqa
 
 import sys, fnmatch
 import importlib
@@ -15,7 +17,7 @@ def check_possibility(periph, dma_stream, curr_dict, dma_map, check_list, cannot
     global ignore_list
     if debug:
         print('............ Checking ', periph, dma_stream, 'without', cannot_use_stream)
-    for other_periph in curr_dict:
+    for other_periph in sorted(curr_dict.keys()):
         if other_periph != periph:
             if curr_dict[other_periph] == dma_stream:
                 if other_periph in forbidden_map[periph]:
@@ -67,9 +69,9 @@ def can_share(periph, noshare_list):
     return False
 
 
-# list of peripherals on H7 that are on DMAMUX2 and BDMA
+# list of peripherals that are on DMAMUX2 and BDMA
 have_DMAMUX = False
-DMAMUX2_peripherals = [ 'I2C4', 'SPI6', 'ADC3' ]
+DMAMUX2_peripherals = []
 
 def dmamux_channel(key):
     '''return DMAMUX channel for H7'''
@@ -240,7 +242,7 @@ def generate_DMAMUX_map(peripheral_list, noshare_list, dma_exclude, stream_ofs):
     # static allocation is in stm32h7_mcuconf.h
     map2 = generate_DMAMUX_map_mask(dmamux2_peripherals, 0xff, noshare_list, dma_exclude, stream_ofs)
     # translate entries from map2 to "DMA controller 3", which is used for BDMA
-    for p in map2.keys():
+    for p in sorted(map2.keys()):
         streams = []
         for (controller,stream) in map2[p]:
             streams.append((3,stream))
@@ -293,10 +295,14 @@ def forbidden_list(p, peripheral_list):
 
 
 def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
-                     dma_priority='', dma_noshare=[]):
+                     dma_priority='', dma_noshare=[], quiet=False):
     '''write out a DMA resolver header file'''
     global dma_map, have_DMAMUX, has_bdshot
     timer_ch_periph = []
+
+    if mcu_type.startswith('STM32H7'):
+        global DMAMUX2_peripherals
+        DMAMUX2_peripherals = [ 'I2C4', 'SPI6', 'ADC3' ]
 
     has_bdshot = False
 
@@ -331,7 +337,8 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
 
         dma_map = generate_DMAMUX_map(peripheral_list, noshare_list, dma_exclude, stream_ofs)
 
-    print("Writing DMA map")
+    if not quiet:
+        print("Writing DMA map")
     unassigned = []
     curr_dict = {}
 
@@ -340,7 +347,24 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
     for p in peripheral_list:
         forbidden_map[p] = forbidden_list(p, peripheral_list)
 
+    # force sharing of TIMx_UP and TIMx_CHy if possible
+    periphs = peripheral_list.copy()
+    forbidden_streams = []
     for periph in peripheral_list:
+        if "_UP" in periph:
+            for periph2 in peripheral_list:
+                if "_CH" in periph2 and periph[:4] == periph2[:4]:
+                    shared_channels = [value for value in dma_map[periph] if value in dma_map[periph2]]
+                    if len(shared_channels) > 0:
+                        stream = (shared_channels[0][0], shared_channels[0][1])
+                        curr_dict[periph] = stream
+                        curr_dict[periph2] = stream
+                        forbidden_streams.append(stream)
+                        periphs.remove(periph)
+                        periphs.remove(periph2)
+                        print("Sharing channel %s for %s %s" % (stream, periph, periph2))
+
+    for periph in periphs:
         if "_CH" in periph:
             has_bdshot = True # the list contains a CH port
         if periph in dma_exclude:
@@ -359,7 +383,7 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
                 print('........Possibility for', periph, streamchan)
             stream = (streamchan[0], streamchan[1])
             if check_possibility(periph, stream, curr_dict, dma_map,
-                                 check_list, [], forbidden_map):
+                                 check_list, forbidden_streams, forbidden_map):
                 curr_dict[periph] = stream
                 if debug:
                     print ('....................... Setting', periph, stream)
@@ -374,7 +398,7 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
 
     # now look for shared DMA possibilities
     stream_assign = {}
-    for k in curr_dict.keys():
+    for k in sorted(curr_dict.keys()):
         p = curr_dict[k]
         if not p in stream_assign:
             stream_assign[p] = [k]
@@ -447,9 +471,17 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
             shared = ' // shared %s' % ','.join(stream_assign[stream])
             if stream[0] in [1,2]:
                 shared_set.add("(1U<<STM32_DMA_STREAM_ID(%u,%u))" % (stream[0],stream[1]))
+        # Plain I2C key (no _RX/_TX suffix) is used for the ChibiOS I2Cv4 LLD
+        # which takes a single DMA channel per peripheral via
+        # STM32_I2C_I2Cx_DMA_CHANNEL, and handles DMAMUX request source
+        # selection internally.
+        is_i2cv4 = (key.startswith('I2C') and
+                    not key.endswith('_RX') and not key.endswith('_TX'))
+        stream_suffix = 'CHANNEL' if is_i2cv4 else 'STREAM'
         if curr_dict[key] == "STM32_DMA_STREAM_ID_ANY":
-            f.write("#define %-30s STM32_DMA_STREAM_ID_ANY\n" % (chibios_dma_define_name(key)+'STREAM'))
-            f.write("#define %-30s %s\n" % (chibios_dma_define_name(key)+'CHAN', dmamux_channel(key)))
+            f.write("#define %-30s STM32_DMA_STREAM_ID_ANY\n" % (chibios_dma_define_name(key)+stream_suffix))
+            if not is_i2cv4:
+                f.write("#define %-30s %s\n" % (chibios_dma_define_name(key)+'CHAN', dmamux_channel(key)))
             continue
         else:
             dma_controller = curr_dict[key][0]
@@ -460,7 +492,7 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
                 continue
             else:
                 f.write("#define %-30s STM32_DMA_STREAM_ID(%u, %u)%s\n" %
-                        (chibios_dma_define_name(key)+'STREAM', dma_controller,
+                        (chibios_dma_define_name(key)+stream_suffix, dma_controller,
                              curr_dict[key][1], shared))
             if have_DMAMUX and "_UP" in key:
                 # share the dma with rest of the _CH ports
@@ -471,7 +503,11 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
                     f.write("#define %-30s STM32_DMA_STREAM_ID(%u, %u)%s\n" %
                         (chibios_dma_define_name(chkey)+'STREAM', dma_controller,
                             curr_dict[key][1], shared))
-        for streamchan in dma_map[key]:
+        if is_i2cv4:
+            # I2Cv4 does not need a separate CHAN define; the LLD selects
+            # the DMAMUX request source (STM32_DMAMUX1_I2Cx_TX/RX) itself
+            continue
+        for streamchan in sorted(dma_map[key]):
             if stream == (streamchan[0], streamchan[1]):
                 if have_DMAMUX:
                     chan = dmamux_channel(key)
@@ -486,7 +522,7 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
                         if chkey not in timer_ch_periph:
                             continue
                         f.write("#define %-30s %s\n" %
-                                (chibios_dma_define_name(chkey)+'CHAN', 
+                                (chibios_dma_define_name(chkey)+'CHAN',
                                 chan.replace('_UP', '_CH{}'.format(ch))))
                 break
 
@@ -494,7 +530,7 @@ def write_dma_header(f, peripheral_list, mcu_type, dma_exclude=[],
     if len(shared_set) == 0:
         f.write("#define SHARED_DMA_MASK 0\n")
     else:
-        f.write("#define SHARED_DMA_MASK (%s)\n" % '|'.join(list(shared_set)))
+        f.write("#define SHARED_DMA_MASK (%s)\n" % '|'.join(sorted(list(shared_set))))
 
     # now generate UARTDriver.cpp DMA config lines
     f.write("\n\n// generated UART DMA configuration lines\n")

@@ -19,6 +19,9 @@
  */
 
 #include "AP_Airspeed_ASP5033.h"
+
+#if AP_AIRSPEED_ASP5033_ENABLED
+
 #include <AP_HAL/I2CDevice.h>
 
 extern const AP_HAL::HAL &hal;
@@ -41,7 +44,7 @@ bool AP_Airspeed_ASP5033::init()
     // probe the sensor, supporting multiple possible I2C addresses
     const uint8_t addresses[] = { ASP5033_I2C_ADDR_1, ASP5033_I2C_ADDR_2 };
     for (uint8_t address : addresses) {
-        dev = hal.i2c_mgr->get_device(get_bus(), address);
+        dev = hal.i2c_mgr->get_device_ptr(get_bus(), address);
         if (!dev) {
             continue;
         }
@@ -75,7 +78,7 @@ bool AP_Airspeed_ASP5033::confirm_sensor_id(void)
 {
     uint8_t part_id;
     if (!dev->read_registers(REG_PART_ID_SET, &part_id, 1) ||
-        part_id != REG_WHOAMI_DEFAULT_ID) {
+        ( (part_id != REG_WHOAMI_DEFAULT_ID) && (part_id != REG_WHOAMI_RECHECK_ID) ) ) {
         return false;
     }
     if (!dev->write_register(REG_PART_ID_SET, REG_WHOAMI_RECHECK_ID)) {
@@ -174,3 +177,5 @@ bool AP_Airspeed_ASP5033::get_temperature(float &temperature)
 
     return true;
 }
+
+#endif

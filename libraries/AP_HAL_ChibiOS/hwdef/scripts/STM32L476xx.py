@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+
+# flake8: noqa
 '''
 tables for STM32L476RG
 '''
@@ -36,6 +38,10 @@ mcu = {
     ],
 
     'EXPECTED_CLOCK' : 80000000,
+
+    'DEFINES' : {
+        'STM32L4' : '1',
+    }
 }
 
 DMA_Map = {

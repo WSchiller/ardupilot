@@ -4,10 +4,27 @@
 bool ModeAuto::_enter()
 {
 #if HAL_QUADPLANE_ENABLED
+    // check if we should refuse auto mode due to a missing takeoff in
+    // guided_wait_takeoff state
+    if (plane.previous_mode == &plane.mode_guided &&
+        quadplane.guided_wait_takeoff_on_mode_enter) {
+        if (!plane.mission.starts_with_takeoff_cmd()) {
+            gcs().send_text(MAV_SEVERITY_ERROR,"Takeoff waypoint required");
+            quadplane.guided_wait_takeoff = true;
+            return false;
+        }
+    }
+    
     if (plane.quadplane.available() && plane.quadplane.enable == 2) {
         plane.auto_state.vtol_mode = true;
     } else {
         plane.auto_state.vtol_mode = false;
+    }
+
+    // initialise waypoint and spline controller so that WP_SPD parameter
+    // changes are picked up on mode entry, matching ArduCopter's mode_auto init
+    if (plane.quadplane.available()) {
+        plane.quadplane.wp_nav->wp_and_spline_init_m();
     }
 #else
     plane.auto_state.vtol_mode = false;
@@ -54,7 +71,7 @@ void ModeAuto::update()
     if (plane.mission.state() != AP_Mission::MISSION_RUNNING) {
         // this could happen if AP_Landing::restart_landing_sequence() returns false which would only happen if:
         // restart_landing_sequence() is called when not executing a NAV_LAND or there is no previous nav point
-        plane.set_mode(plane.mode_rtl, ModeReason::MISSION_END);
+        IGNORE_RETURN(plane.set_mode(plane.mode_rtl, ModeReason::MISSION_END));
         gcs().send_text(MAV_SEVERITY_INFO, "Aircraft in auto without a running mission");
         return;
     }
@@ -68,11 +85,17 @@ void ModeAuto::update()
     }
 #endif
 
+#if AP_PLANE_GLIDER_PULLUP_ENABLED
+    if (pullup.in_pullup()) {
+        return;
+    }
+#endif
+
     if (nav_cmd_id == MAV_CMD_NAV_TAKEOFF ||
-        (nav_cmd_id == MAV_CMD_NAV_LAND && plane.flight_stage == AP_Vehicle::FixedWing::FLIGHT_ABORT_LAND)) {
+        (nav_cmd_id == MAV_CMD_NAV_LAND && plane.flight_stage == AP_FixedWing::FlightStage::ABORT_LANDING)) {
         plane.takeoff_calc_roll();
         plane.takeoff_calc_pitch();
-        plane.calc_throttle();
+        plane.takeoff_calc_throttle();
     } else if (nav_cmd_id == MAV_CMD_NAV_LAND) {
         plane.calc_nav_roll();
         plane.calc_nav_pitch();
@@ -86,12 +109,11 @@ void ModeAuto::update()
         } else {
             plane.calc_throttle();
         }
-#if AP_SCRIPTING_ENABLED
+#if AP_EXTERNAL_BINDING_ENABLED
     } else if (nav_cmd_id == MAV_CMD_NAV_SCRIPT_TIME) {
         // NAV_SCRIPTING has a desired roll and pitch rate and desired throttle
-        plane.nav_roll_cd = plane.ahrs.roll_sensor;
-        plane.nav_pitch_cd = plane.ahrs.pitch_sensor;
-        SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, plane.nav_scripting.throttle_pct);
+        plane.nav_roll_cd = ahrs.roll_sensor;
+        plane.nav_pitch_cd = ahrs.pitch_sensor;
 #endif
     } else {
         // we are doing normal AUTO flight, the special cases
@@ -112,3 +134,75 @@ void ModeAuto::navigate()
     }
 }
 
+
+bool ModeAuto::does_auto_navigation() const
+{
+#if AP_EXTERNAL_BINDING_ENABLED
+   return (!plane.nav_scripting_active());
+#endif
+   return true;
+}
+
+bool ModeAuto::does_auto_throttle() const
+{
+#if AP_EXTERNAL_BINDING_ENABLED
+   return (!plane.nav_scripting_active());
+#endif
+   return true;
+}
+
+// returns true if the vehicle can be armed in this mode
+bool ModeAuto::_pre_arm_checks(size_t buflen, char *buffer) const
+{
+#if HAL_QUADPLANE_ENABLED
+    if (plane.quadplane.enabled()) {
+        if (plane.quadplane.option_is_set(QuadPlane::Option::ONLY_ARM_IN_QMODE_OR_AUTO) &&
+                !plane.quadplane.is_vtol_takeoff(plane.mission.get_current_nav_cmd().id)) {
+            hal.util->snprintf(buffer, buflen, "not in VTOL takeoff");
+            return false;
+        }
+        if (!plane.mission.starts_with_takeoff_cmd()) {
+            hal.util->snprintf(buffer, buflen, "missing takeoff waypoint");
+            return false;
+        }
+    }
+#endif
+    // Note that this bypasses the base class checks
+    return true;
+}
+
+bool ModeAuto::is_landing() const
+{
+    return (plane.flight_stage == AP_FixedWing::FlightStage::LAND);
+}
+
+void ModeAuto::run()
+{
+#if AP_PLANE_GLIDER_PULLUP_ENABLED
+    if (pullup.in_pullup()) {
+        pullup.stabilize_pullup();
+        return;
+    }
+#endif
+    
+    if (plane.mission.get_current_nav_cmd().id == MAV_CMD_NAV_ALTITUDE_WAIT) {
+
+        wiggle_servos();
+
+        SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, 0.0);
+        SRV_Channels::set_output_scaled(SRV_Channel::k_throttleLeft, 0.0);
+        SRV_Channels::set_output_scaled(SRV_Channel::k_throttleRight, 0.0);
+
+        SRV_Channels::set_output_to_trim(SRV_Channel::k_throttle);
+        SRV_Channels::set_output_to_trim(SRV_Channel::k_throttleLeft);
+        SRV_Channels::set_output_to_trim(SRV_Channel::k_throttleRight);
+
+        // Relax attitude control
+        reset_controllers();
+
+    } else {
+        // Normal flight, run base class
+        Mode::run();
+
+    }
+}

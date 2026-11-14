@@ -14,15 +14,6 @@ static void failsafe_check_static()
 
 void Blimp::init_ardupilot()
 {
-
-#if STATS_ENABLED == ENABLED
-    // initialise stats module
-    g2.stats.init();
-#endif
-
-    BoardConfig.init();
-
-
     // initialise notify system
     notify.init();
     notify_flight_mode();
@@ -30,25 +21,31 @@ void Blimp::init_ardupilot()
     // initialise battery monitor
     battery.init();
 
+#if AP_RSSI_ENABLED
     // Init RSSI
     rssi.init();
+#endif
 
     barometer.init();
 
     // setup telem slots with serial ports
     gcs().setup_uarts();
 
-#if LOGGING_ENABLED == ENABLED
-    log_init();
-#endif
-
     init_rc_in();               // sets up rc channels from radio
 
     // allocate the motors class
     allocate_motors();
+    loiter = NEW_NOTHROW Loiter(blimp.scheduler.get_loop_rate_hz());
+    if (loiter == nullptr) {
+        AP_BoardConfig::allocation_error("Loiter");
+    }
+    AP_Param::load_object_from_eeprom(loiter, Loiter::var_info);
+    // reload lines from the defaults file that may now be accessible
+    AP_Param::reload_defaults_file(true);
+    // param count could have changed
+    AP_Param::invalidate_count();
 
     // initialise rc channels including setting mode
-    rc().convert_options(RC_Channel::AUX_FUNC::ARMDISARM_UNUSED, RC_Channel::AUX_FUNC::ARMDISARM);
     rc().init();
 
     // sets up motors and output to escs
@@ -58,7 +55,9 @@ void Blimp::init_ardupilot()
     // motors initialised so parameters can be sent
     ap.initialised_params = true;
 
+#if AP_RELAY_ENABLED
     relay.init();
+#endif
 
     /*
      *  setup the 'main loop is dead' check. Note that this relies on
@@ -68,7 +67,7 @@ void Blimp::init_ardupilot()
 
     // Do GPS init
     gps.set_log_gps_bit(MASK_LOG_GPS);
-    gps.init(serial_manager);
+    gps.init();
 
     AP::compass().set_log_bit(MASK_LOG_COMPASS);
     AP::compass().init();
@@ -77,35 +76,30 @@ void Blimp::init_ardupilot()
     //-----------------------------
     barometer.set_log_baro_bit(MASK_LOG_IMU);
     barometer.calibrate();
+    mode_auto.mission.init();
 
+#if HAL_LOGGING_ENABLED
     // initialise AP_Logger library
     logger.setVehicle_Startup_Writer(FUNCTOR_BIND(&blimp, &Blimp::Log_Write_Vehicle_Startup_Messages, void));
+#endif
 
     startup_INS_ground();
-
-#if AP_SCRIPTING_ENABLED
-    g2.scripting.init();
-#endif // AP_SCRIPTING_ENABLED
-
-    // we don't want writes to the serial port to cause us to pause
-    // mid-flight, so set the serial ports non-blocking once we are
-    // ready to fly
-    serial_manager.set_blocking_writes_all(false);
 
     ins.set_log_raw_bit(MASK_LOG_IMU_RAW);
 
     // setup fin output
-    motors->setup_fins();
+    motors->setup_finsmotors();
 
     // enable output to motors
     if (arming.rc_calibration_checks(true)) {
         enable_motor_output();
     }
 
-    //Initialise fin filters
-    vel_xy_filter.init(scheduler.get_loop_rate_hz(), motors->freq_hz, 0.5f, 15.0f);
+    //Initialise velocity filters
+    vel_x_filter.init(scheduler.get_loop_rate_hz(), motors->freq_hz, 0.5f, 15.0f);
+    vel_y_filter.init(scheduler.get_loop_rate_hz(), motors->freq_hz, 0.5f, 15.0f);
     vel_z_filter.init(scheduler.get_loop_rate_hz(), motors->freq_hz, 1.0f, 15.0f);
-    vel_yaw_filter.init(scheduler.get_loop_rate_hz(),motors->freq_hz, 5.0f, 15.0f);
+    vel_yaw_filter.init(scheduler.get_loop_rate_hz(), motors->freq_hz, 5.0f, 15.0f);
 
     // attempt to switch to MANUAL, if this fails then switch to Land
     if (!set_mode((enum Mode::Number)g.initial_mode.get(), ModeReason::INITIALISED)) {
@@ -128,6 +122,7 @@ void Blimp::startup_INS_ground()
 {
     // initialise ahrs (may push imu calibration into the mpu6000 if using that device).
     ahrs.init();
+    // No Blimp option, but AHRS requirements are similar to Copter's, so that is what we use.
     ahrs.set_vehicle_class(AP_AHRS::VehicleClass::COPTER);
 
     // Warm up and calibrate gyro offsets
@@ -157,16 +152,21 @@ bool Blimp::ekf_has_absolute_position() const
         return false;
     }
 
-    // with EKF use filter status and ekf check
-    nav_filter_status filt_status = inertial_nav.get_filter_status();
-
     // if disarmed we accept a predicted horizontal position
     if (!motors->armed()) {
-        return ((filt_status.flags.horiz_pos_abs || filt_status.flags.pred_horiz_pos_abs));
-    } else {
-        // once armed we require a good absolute position and EKF must not be in const_pos_mode
-        return (filt_status.flags.horiz_pos_abs && !filt_status.flags.const_pos_mode);
+        if (ahrs.configured_backend_has_status(AP_AHRS::Status::HORIZ_POS_ABS)) {
+            return true;
+        }
+        if (ahrs.configured_backend_has_status(AP_AHRS::Status::PRED_HORIZ_POS_ABS)) {
+            return true;
+        }
+        return false;
     }
+    // once armed we require a good absolute position and EKF must not be in const_pos_mode
+    if (ahrs.configured_backend_has_status(AP_AHRS::Status::CONST_POS_MODE)) {
+        return false;
+    }
+    return ahrs.configured_backend_has_status(AP_AHRS::Status::HORIZ_POS_ABS);
 }
 
 // ekf_has_relative_position - returns true if the EKF can provide a position estimate relative to it's starting position
@@ -183,15 +183,14 @@ bool Blimp::ekf_has_relative_position() const
         return false;
     }
 
-    // get filter status from EKF
-    nav_filter_status filt_status = inertial_nav.get_filter_status();
-
     // if disarmed we accept a predicted horizontal relative position
     if (!motors->armed()) {
-        return (filt_status.flags.pred_horiz_pos_rel);
-    } else {
-        return (filt_status.flags.horiz_pos_rel && !filt_status.flags.const_pos_mode);
+        return ahrs.configured_backend_has_status(AP_AHRS::Status::PRED_HORIZ_POS_REL);
     }
+    if (ahrs.configured_backend_has_status(AP_AHRS::Status::CONST_POS_MODE)) {
+        return false;
+    }
+    return ahrs.configured_backend_has_status(AP_AHRS::Status::HORIZ_POS_REL);
 }
 
 // returns true if the ekf has a good altitude estimate (required for modes which do AltHold)
@@ -202,11 +201,15 @@ bool Blimp::ekf_alt_ok() const
         return false;
     }
 
-    // with EKF use filter status and ekf check
-    nav_filter_status filt_status = inertial_nav.get_filter_status();
-
     // require both vertical velocity and position
-    return (filt_status.flags.vert_vel && filt_status.flags.vert_pos);
+    if (!ahrs.configured_backend_has_status(AP_AHRS::Status::VERT_VEL)) {
+        return false;
+    }
+    if (!ahrs.configured_backend_has_status(AP_AHRS::Status::VERT_POS)) {
+        return false;
+    }
+
+    return true;
 }
 
 // update_auto_armed - update status of auto_armed flag
@@ -226,20 +229,18 @@ void Blimp::update_auto_armed()
     }
 }
 
+#if HAL_LOGGING_ENABLED
 /*
   should we log a message type now?
  */
 bool Blimp::should_log(uint32_t mask)
 {
-#if LOGGING_ENABLED == ENABLED
     ap.logging_started = logger.logging_started();
     return logger.should_log(mask);
-#else
-    return false;
-#endif
 }
+#endif
 
-// return MAV_TYPE corresponding to frame class
+// return MAV_TYPE
 MAV_TYPE Blimp::get_frame_mav_type()
 {
     return MAV_TYPE_AIRSHIP;
@@ -248,7 +249,7 @@ MAV_TYPE Blimp::get_frame_mav_type()
 // return string corresponding to frame_class
 const char* Blimp::get_frame_string()
 {
-    return "AIRFISH";  //TODO: Change to be able to change with different frame_classes
+    return motors->get_frame_string();
 }
 
 /*
@@ -256,12 +257,7 @@ const char* Blimp::get_frame_string()
  */
 void Blimp::allocate_motors(void)
 {
-    switch ((Fins::motor_frame_class)g2.frame_class.get()) {
-    case Fins::MOTOR_FRAME_AIRFISH:
-    default:
-        motors = new Fins(blimp.scheduler.get_loop_rate_hz());
-        break;
-    }
+    motors = NEW_NOTHROW Fins(blimp.scheduler.get_loop_rate_hz());
     if (motors == nullptr) {
         AP_BoardConfig::allocation_error("FRAME_CLASS=%u", (unsigned)g2.frame_class.get());
     }

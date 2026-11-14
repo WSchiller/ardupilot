@@ -27,6 +27,11 @@ public:
     }
     bool get_storage_fram_enabled() const { return storage_fram_enabled; }
 
+    bool get_dds_use_sim_time() const { return dds_use_sim_time; }
+    void set_dds_use_sim_time(bool _enabled) {
+        dds_use_sim_time = _enabled;
+    }
+
     /*
       instructs the simulation to wipe any storage as it opens it:
      */
@@ -37,15 +42,24 @@ public:
 
     uint8_t get_instance() const;
 
+#if defined(HAL_BUILD_AP_PERIPH)
+    bool run_in_maintenance_mode() const;
+#endif
+
+    uint32_t get_uart_output_full_queue_count() const;
+
+    HALSITL::SITL_State * get_sitl_state() const { return _sitl_state; }
+
 private:
     HALSITL::SITL_State *_sitl_state;
 
     void setup_signal_handlers() const;
     static void exit_signal_handler(int);
 
-    bool storage_posix_enabled;
+    bool storage_posix_enabled = true;
     bool storage_flash_enabled;
     bool storage_fram_enabled;
+    bool dds_use_sim_time = false;
 
     // set to true if simulation is to wipe storage as it is opened:
     bool wipe_storage;

@@ -18,14 +18,6 @@
 
 #include "AP_HAL_ChibiOS.h"
 
-#ifndef HAL_GPIO_LED_ON
-#define HAL_GPIO_LED_ON 0
-#endif
-
-#ifndef HAL_GPIO_LED_OFF
-#define HAL_GPIO_LED_OFF 1
-#endif
-
 /*
   pin types for alternative configuration
  */
@@ -50,6 +42,8 @@ public:
     /* Alternative interface: */
     AP_HAL::DigitalSource* channel(uint16_t n) override;
 
+    // only override and implement if necessary ChibiOS declarations are available
+#if PAL_USE_CALLBACKS == TRUE
     /* Interrupt interface - fast, for RCOutput and SPI radios */
     bool    attach_interrupt(uint8_t interrupt_num,
                              AP_HAL::Proc p,
@@ -59,6 +53,7 @@ public:
     bool    attach_interrupt(uint8_t pin,
                              irq_handler_fn_t fn,
                              INTERRUPT_TRIGGER_TYPE mode) override;
+#endif // PAL_USE_CALLBACKS == TRUE
 
     /* return true if USB cable is connected */
     bool    usb_connected(void) override;
@@ -77,17 +72,24 @@ public:
 #ifndef IOMCU_FW
     // timer tick
     void timer_tick(void) override;
+
+    // Check for ISR floods
+    bool arming_checks(size_t buflen, char *buffer) const override;
 #endif
 
     // check if a pin number is valid
     bool valid_pin(uint8_t pin) const override;
+
+    // return servo channel associated with GPIO pin.  Returns true on success and fills in servo_ch argument
+    // servo_ch uses zero-based indexing
+    bool pin_to_servo_channel(uint8_t pin, uint8_t& servo_ch) const override;
 
     /*
       resolve an ioline to take account of alternative configurations
      */
     static ioline_t resolve_alt_config(ioline_t base, PERIPH_TYPE ptype, uint8_t instance);
 
-#if defined(STM32F7) || defined(STM32H7) || defined(STM32F4) || defined(STM32F3) || defined(STM32G4) || defined(STM32L4)
+#if defined(STM32F7) || defined(STM32H7) || defined(STM32F4) || defined(STM32F3) || defined(STM32G4) || defined(STM32L4) || defined(STM32L4PLUS)
     // allow for save and restore of pin settings
     bool    get_mode(uint8_t pin, uint32_t &mode) override;
     void    set_mode(uint8_t pin, uint32_t mode) override;

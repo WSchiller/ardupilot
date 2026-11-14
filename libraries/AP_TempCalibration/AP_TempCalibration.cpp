@@ -16,9 +16,15 @@
   temperature calibration library
  */
 
+#include "AP_TempCalibration_config.h"
+
+#if AP_TEMPCALIBRATION_ENABLED
+
 #include "AP_TempCalibration.h"
 #include <stdio.h>
 #include <AP_Baro/AP_Baro.h>
+#include <AP_HAL/AP_HAL.h>
+#include <AP_InertialSensor/AP_InertialSensor.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -28,6 +34,10 @@ extern const AP_HAL::HAL& hal;
 # define debug(fmt, args ...)  do {printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ## args); } while(0)
 #else
 # define debug(fmt, args ...)
+#endif
+
+#ifndef HAL_TCAL_BARO_EXP_DEFAULT
+#define HAL_TCAL_BARO_EXP_DEFAULT 0.0f
 #endif
 
 // table of user settable and learned parameters
@@ -66,7 +76,7 @@ const AP_Param::GroupInfo AP_TempCalibration::var_info[] = {
     // @ReadOnly: True
     // @Volatile: True
     // @User: Advanced
-    AP_GROUPINFO("_BARO_EXP", 5, AP_TempCalibration, baro_exponent, 0),
+    AP_GROUPINFO("_BARO_EXP", 5, AP_TempCalibration, baro_exponent, HAL_TCAL_BARO_EXP_DEFAULT),
     
     AP_GROUPEND
 };
@@ -94,7 +104,7 @@ void AP_TempCalibration::setup_learning(void)
     learn_count = 200;
     learn_i = 0;
     delete [] learn_values;
-    learn_values = new float[learn_count];
+    learn_values = NEW_NOTHROW float[learn_count];
     if (learn_values == nullptr) {
         return;
     }
@@ -231,3 +241,5 @@ void AP_TempCalibration::update(void)
         break;
     }
 }
+
+#endif  // AP_TEMPCALIBRATION_ENABLED

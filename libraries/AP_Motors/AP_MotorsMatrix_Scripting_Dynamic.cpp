@@ -12,7 +12,10 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#if AP_SCRIPTING_ENABLED
+
+#include "AP_Motors_config.h"
+
+#if AP_MOTORS_FRAME_DYNAMIC_SCRIPTING_MATRIX_ENABLED
 
 // This allows motor roll, pitch, yaw and throttle factors to be changed in flight, allowing vehicle geometry to be changed
 
@@ -125,4 +128,4 @@ void AP_MotorsMatrix_Scripting_Dynamic::output_to_motors()
 // singleton instance
 AP_MotorsMatrix_Scripting_Dynamic *AP_MotorsMatrix_Scripting_Dynamic::_singleton;
 
-#endif // AP_SCRIPTING_ENABLED
+#endif  // AP_MOTORS_FRAME_DYNAMIC_SCRIPTING_MATRIX_ENABLED

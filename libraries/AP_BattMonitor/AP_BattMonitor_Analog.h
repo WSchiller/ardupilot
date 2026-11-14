@@ -1,97 +1,10 @@
 #pragma once
 
-#include "AP_BattMonitor.h"
 #include "AP_BattMonitor_Backend.h"
 
-// default pins and dividers
-#if defined(HAL_BATT_VOLT_PIN)
- // pins defined in board config (hwdef.dat on ChibiOS)
- # define AP_BATT_VOLT_PIN                  HAL_BATT_VOLT_PIN
- # define AP_BATT_CURR_PIN                  HAL_BATT_CURR_PIN
- # define AP_BATT_VOLTDIVIDER_DEFAULT       HAL_BATT_VOLT_SCALE
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  HAL_BATT_CURR_SCALE
-#elif CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
- # define AP_BATT_VOLT_PIN                  4
- # define AP_BATT_CURR_PIN                  3
- # define AP_BATT_VOLTDIVIDER_DEFAULT       10.1f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
-#elif CONFIG_HAL_BOARD == HAL_BOARD_SITL
- # define AP_BATT_VOLT_PIN                  13
- # define AP_BATT_CURR_PIN                  12
- # define AP_BATT_VOLTDIVIDER_DEFAULT       10.1f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
+#if AP_BATTERY_ANALOG_ENABLED
 
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX &&  (CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ERLEBOARD || CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_PXF)
- # define AP_BATT_VOLT_PIN                  5
- # define AP_BATT_CURR_PIN                  6
- # define AP_BATT_VOLTDIVIDER_DEFAULT       10.1f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
-
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX && CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BBBMINI
- # define AP_BATT_VOLT_PIN                  0
- # define AP_BATT_CURR_PIN                  1
- # define AP_BATT_VOLTDIVIDER_DEFAULT       10.1f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
-
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX && CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BLUE
- # define AP_BATT_VOLT_PIN                  0
- # define AP_BATT_CURR_PIN                  1
- # define AP_BATT_VOLTDIVIDER_DEFAULT       10.1f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
-
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX && CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_POCKET
- # define AP_BATT_VOLT_PIN                  1
- # define AP_BATT_CURR_PIN                  0
- # define AP_BATT_VOLTDIVIDER_DEFAULT       10.1f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
-
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX && (CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_NAVIO || CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_NAVIO2)
- # define AP_BATT_VOLT_PIN                  2
- # define AP_BATT_CURR_PIN                  3
- # define AP_BATT_VOLTDIVIDER_DEFAULT       11.3f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
-
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX && (CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_NAVIGATOR)
- # define AP_BATT_VOLT_PIN                  5
- # define AP_BATT_CURR_PIN                  4
- # define AP_BATT_VOLTDIVIDER_DEFAULT       11.0f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  37.8788f
- # define AP_BATT_CURR_AMP_OFFSET_DEFAULT   0.330f
-
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX && (CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_EDGE)
- # define AP_BATT_VOLT_PIN                  3
- # define AP_BATT_CURR_PIN                  2
- # define AP_BATT_VOLTDIVIDER_DEFAULT       18.62
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  62.98f
-
- # define AP_BATT2_VOLT_PIN                  5
- # define AP_BATT2_CURR_PIN                  4
- # define AP_BATT2_VOLTDIVIDER_DEFAULT       18.62
- # define AP_BATT2_CURR_AMP_PERVOLT_DEFAULT  62.98f
-
-#elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX && (CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_OBAL_V1)
- # define AP_BATT_VOLT_PIN                  0
- # define AP_BATT_CURR_PIN                  1
- # define AP_BATT_VOLTDIVIDER_DEFAULT       10.1f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
-
-#else
- # define AP_BATT_VOLT_PIN                  -1
- # define AP_BATT_CURR_PIN                  -1
- # define AP_BATT_VOLTDIVIDER_DEFAULT       10.1f
- # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT  17.0f
-#endif
-
-// This is 0 for the majority of the power modules.
-#ifndef AP_BATT_CURR_AMP_OFFSET_DEFAULT
- #define AP_BATT_CURR_AMP_OFFSET_DEFAULT 0.0f
-#endif
-
-// Other values normally set directly by mission planner
-// # define AP_BATT_VOLTDIVIDER_DEFAULT 15.70   // Volt divider for AttoPilot 50V/90A sensor
-// # define AP_BATT_VOLTDIVIDER_DEFAULT 4.127   // Volt divider for AttoPilot 13.6V/45A sensor
-// # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT 27.32  // Amp/Volt for AttoPilot 50V/90A sensor
-// # define AP_BATT_CURR_AMP_PERVOLT_DEFAULT 13.66  // Amp/Volt for AttoPilot 13.6V/45A sensor
+#include "AP_BattMonitor.h"
 
 class AP_BattMonitor_Analog : public AP_BattMonitor_Backend
 {
@@ -126,3 +39,5 @@ protected:
     AP_Int8  _volt_pin;                 /// board pin used to measure battery voltage
     AP_Int8  _curr_pin;                 /// board pin used to measure battery current
 };
+
+#endif  // AP_BATTERY_ANALOG_ENABLED

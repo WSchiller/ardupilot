@@ -19,8 +19,11 @@
 //
 #pragma once
 
-#include <AP_Common/AP_Common.h>
-#include <AP_HAL/AP_HAL.h>
+#include "AP_GPS_config.h"
+
+#if AP_GPS_MAV_ENABLED
+
+#include <AP_HAL/AP_HAL_Boards.h>
 
 #include "AP_GPS.h"
 #include "GPS_Backend.h"
@@ -43,3 +46,5 @@ private:
     uint32_t first_week;
     JitterCorrection jitter{2000};
 };
+
+#endif  // AP_GPS_MAV_ENABLED

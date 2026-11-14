@@ -17,12 +17,22 @@
 
 #include "AP_RangeFinder_MaxsonarSerialLV.h"
 
+#if AP_RANGEFINDER_MAXBOTIX_SERIAL_ENABLED
+
 #include <AP_HAL/AP_HAL.h>
 #include <ctype.h>
 
 #define MAXSONAR_SERIAL_LV_BAUD_RATE 9600
 
 extern const AP_HAL::HAL& hal;
+
+AP_RangeFinder_MaxsonarSerialLV::AP_RangeFinder_MaxsonarSerialLV(
+    RangeFinder::RangeFinder_State &_state,
+    AP_RangeFinder_Params &_params):
+    AP_RangeFinder_Backend_Serial(_state, _params)
+{
+    params.scaling.set_default(0.0254f);
+}
 
 // read - return last value measured by sensor
 bool AP_RangeFinder_MaxsonarSerialLV::get_reading(float &reading_m)
@@ -32,11 +42,13 @@ bool AP_RangeFinder_MaxsonarSerialLV::get_reading(float &reading_m)
     }
 
     int32_t sum = 0;
-    int16_t nbytes = uart->available();
     uint16_t count = 0;
 
-    while (nbytes-- > 0) {
-        char c = uart->read();
+    for (auto i=0; i<8192; i++) {
+        uint8_t c;
+        if (!uart->read(c)) {
+            break;
+        }
         if (c == '\r') {
             linebuf[linebuf_len] = 0;
             sum += (int)atoi(linebuf);
@@ -56,7 +68,9 @@ bool AP_RangeFinder_MaxsonarSerialLV::get_reading(float &reading_m)
     }
 
     // This sonar gives the metrics in inches, so we have to transform this to meters
-    reading_m = (2.54f * 0.01f) * (float(sum) / count);
+    reading_m = params.scaling * (float(sum) / count);
 
     return true;
 }
+
+#endif  // AP_RANGEFINDER_MAXBOTIX_SERIAL_ENABLED

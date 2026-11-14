@@ -13,7 +13,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #pragma once
-#include <GCS_MAVLink/GCS.h>
+#include <GCS_MAVLink/GCS_MAVLink.h>
 
 class QuadPlane;
 class AP_MotorsMulticopter;
@@ -28,19 +28,19 @@ public:
 
     virtual void VTOL_update() = 0;
 
-    virtual void force_transistion_complete() = 0;
+    virtual void force_transition_complete() = 0;
 
     virtual bool complete() const = 0;
 
     virtual void restart() = 0;
 
-    virtual uint8_t get_log_transision_state() const = 0;
+    virtual uint8_t get_log_transition_state() const = 0;
 
-    virtual bool active() const = 0;
+    virtual bool active_frwd() const = 0;
 
     virtual bool show_vtol_view() const = 0;
 
-    virtual void set_FW_roll_pitch(int32_t& nav_pitch_cd, int32_t& nav_roll_cd, bool& allow_stick_mixing) {};
+    virtual void set_FW_roll_pitch(int32_t& nav_pitch_cd, int32_t& nav_roll_cd) {};
 
     virtual bool set_FW_roll_limit(int32_t& roll_limit_cd) { return false; }
 
@@ -52,15 +52,26 @@ public:
 
     virtual bool set_VTOL_roll_pitch_limit(int32_t& nav_roll_cd, int32_t& nav_pitch_cd) { return false; }
 
+    virtual bool allow_weathervane() { return true; }
+
+    // Return true if forward throttle should be allowed for position control, see Q_FWD_THR_USE
+    virtual bool allow_vfwd() const { return true; }
+
+    virtual void set_last_fw_pitch(void) {}
+
+    virtual bool allow_stick_mixing() const { return true; }
+
+    virtual bool use_multirotor_control_in_fwd_transition() const { return false; }
+
 protected:
 
-    // refences for convenience
+    // references for convenience
     QuadPlane& quadplane;
     AP_MotorsMulticopter*& motors;
 
 };
 
-// Transition for separate left thrust quadplanes
+// Transition for separate lift thrust quadplanes
 class SLT_Transition : public Transition
 {
 public:
@@ -71,17 +82,19 @@ public:
 
     void VTOL_update() override;
 
-    void force_transistion_complete() override;
+    void force_transition_complete() override;
 
-    bool complete() const override { return transition_state == TRANSITION_DONE; }
+    bool complete() const override { return transition_state == State::DONE; }
 
-    void restart() override { transition_state = TRANSITION_AIRSPEED_WAIT; }
+    void restart() override { transition_state = State::AIRSPEED_WAIT; }
 
-    uint8_t get_log_transision_state() const override { return static_cast<uint8_t>(transition_state); }
+    uint8_t get_log_transition_state() const override { return static_cast<uint8_t>(transition_state); }
 
-    bool active() const override;
+    bool active_frwd() const override;
 
     bool show_vtol_view() const override;
+
+    void set_FW_roll_pitch(int32_t& nav_pitch_cd, int32_t& nav_roll_cd) override;
 
     bool set_FW_roll_limit(int32_t& roll_limit_cd) override;
 
@@ -91,12 +104,14 @@ public:
 
     bool set_VTOL_roll_pitch_limit(int32_t& nav_roll_cd, int32_t& nav_pitch_cd) override;
 
+    void set_last_fw_pitch(void) override;
+
 protected:
 
-    enum {
-        TRANSITION_AIRSPEED_WAIT,
-        TRANSITION_TIMER,
-        TRANSITION_DONE
+    enum class State {
+        AIRSPEED_WAIT = 0,
+        TIMER         = 1,
+        DONE          = 2,
     } transition_state;
 
     // timer start for transition
@@ -109,6 +124,11 @@ protected:
     // time and pitch angle whe last in a vtol or FW control mode
     uint32_t last_fw_mode_ms;
     int32_t last_fw_nav_pitch_cd;
+
+    // tiltrotor tilt angle when airspeed wait transition stage completes
+    float airspeed_reached_tilt;
+
+    bool in_forced_transition;
 
 };
 

@@ -41,15 +41,14 @@ void AP_GPS_MSP::handle_msp(const MSP::msp_gps_data_message_t &pkt)
 
     state.time_week = pkt.gps_week;
     state.time_week_ms = pkt.ms_tow;
-    state.status = (AP_GPS::GPS_Status)pkt.fix_type;
+    state.status = (AP_GPS_FixType)pkt.fix_type;
     state.num_sats = pkt.satellites_in_view;
-
-    Location loc = {};
-    loc.lat = pkt.latitude;
-    loc.lng = pkt.longitude;
-    loc.alt = pkt.msl_altitude;
-
-    state.location = loc;
+    state.location = {
+        pkt.latitude,
+        pkt.longitude,
+        pkt.msl_altitude,
+        Location::AltFrame::ABSOLUTE
+    };
     state.hdop = pkt.hdop;
     state.vdop = GPS_UNKNOWN_DOP;
 
@@ -60,8 +59,7 @@ void AP_GPS_MSP::handle_msp(const MSP::msp_gps_data_message_t &pkt)
     vel.z = pkt.ned_vel_down * 0.01;
     state.velocity = vel;
 
-    state.ground_course = wrap_360(degrees(atan2f(state.velocity.y, state.velocity.x)));
-    state.ground_speed = state.velocity.xy().length();
+    velocity_to_speed_course(state);
 
     state.have_speed_accuracy = true;
     state.have_horizontal_accuracy = true;

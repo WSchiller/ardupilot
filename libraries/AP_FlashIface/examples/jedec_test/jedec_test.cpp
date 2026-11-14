@@ -1,6 +1,21 @@
 #include <AP_HAL/AP_HAL.h>
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_LINUX
+
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();
+void setup() { }
+
+void loop()
+{
+    // the library simply panics if a JEDEC device can't be found.  We
+    // can't really recover from that.
+    hal.console->printf("No JEDEC on linux\n");
+    hal.scheduler->delay(1000);
+}
+
+#else
+
 #include <GCS_MAVLink/GCS_Dummy.h>
-#include <AP_Vehicle/AP_Vehicle.h>
 #include <AP_SerialManager/AP_SerialManager.h>
 #include <AP_BoardConfig/AP_BoardConfig.h>
 #include <AP_FlashIface/AP_FlashIface.h>
@@ -23,10 +38,6 @@ GCS_Dummy _gcs;
 #define DELAY_MICROS(x)         do { hal.scheduler->delay_microseconds(x); } while(0)
 #endif
 
-const AP_Param::GroupInfo GCS_MAVLINK_Parameters::var_info[] = {
-        AP_GROUPEND
-};
-
 static AP_SerialManager serial_manager;
 static AP_BoardConfig board_config;
 
@@ -41,7 +52,7 @@ static UNUSED_FUNCTION void test_page_program()
         hal.console->printf("Failed to allocate data for read");
     }
 
-    // fill program data with its own adress
+    // fill program data with its own address
     for (uint32_t i = 0; i < jedec_dev.get_page_size(); i++) {
         data[i] = i;
     }
@@ -184,4 +195,7 @@ void loop()
     hal.scheduler->delay(1000);
 }
 
+#endif
+
 AP_HAL_MAIN();
+

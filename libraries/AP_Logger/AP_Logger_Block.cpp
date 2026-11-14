@@ -2,10 +2,12 @@
   block based logging, for boards with flash logging
  */
 
-#include "AP_Logger_Block.h"
+#include "AP_Logger_config.h"
 
 #if HAL_LOGGING_BLOCK_ENABLED
 
+#include "AP_Logger_Block.h"
+#include "AP_Logger.h"
 #include <AP_HAL/AP_HAL.h>
 #include <stdio.h>
 #include <AP_RTC/AP_RTC.h>
@@ -18,43 +20,55 @@ const extern AP_HAL::HAL& hal;
 #define DF_LOGGING_FORMAT    0x1901201B
 
 AP_Logger_Block::AP_Logger_Block(AP_Logger &front, LoggerMessageWriter_DFLogStart *writer) :
-    writebuf(0),
-    AP_Logger_Backend(front, writer)
+    AP_Logger_Backend(front, writer),
+    writebuf(0)
 {
-    // buffer is used for both reads and writes so access must always be within the semaphore
-    buffer = (uint8_t *)hal.util->malloc_type(page_size_max, AP_HAL::Util::MEM_DMA_SAFE);
-    if (buffer == nullptr) {
-        AP_HAL::panic("Out of DMA memory for logging");
-    }
     df_stats_clear();
 }
 
-// init is called after backend init
+// Init() is called after driver Init(), it is the responsibility of the driver to make sure the 
+// device is ready to accept commands before Init() is called
 void AP_Logger_Block::Init(void)
 {
+    // buffer is used for both reads and writes so access must always be within the semaphore
+    buffer = (uint8_t *)hal.util->malloc_type(df_PageSize, AP_HAL::Util::MEM_DMA_SAFE);
+    if (buffer == nullptr) {
+        AP_HAL::panic("Out of DMA memory for logging");
+    }
+
+    //flash_test();
+
     if (CardInserted()) {
         // reserve space for version in last sector
         df_NumPages -= df_PagePerBlock;
 
-        // determine and limit file backend buffersize
-        uint32_t bufsize = _front._params.file_bufsize;
-        if (bufsize > 64) {
-            bufsize = 64;
-        }
+        // determine buffersize.  LOG_FILE_BUFSIZE is an AP_Int16 and its
+        // documented 4-200 range is metadata only, so constrain it here:
+        // nothing else stops a negative or oversized value reaching the
+        // allocation as a very large uint32_t.
+        uint32_t bufsize = constrain_int16(_front._params.file_bufsize, 4, 200);
         bufsize *= 1024;
 
-        // If we can't allocate the full size, try to reduce it until we can allocate it
-        while (!writebuf.set_size(bufsize) && bufsize >= df_PageSize * df_PagePerBlock) {
-            hal.console->printf("AP_Logger_Block: Couldn't set buffer size to=%u\n", (unsigned)bufsize);
-            bufsize >>= 1;
-        }
-
-        if (!writebuf.get_size()) {
-            hal.console->printf("Out of memory for logging\n");
+        // If we can't allocate the full size, take the largest we can.
+        // set_size_best() steps down by 3/4 rather than halving, so a
+        // board short of memory lands near what is actually available
+        // instead of skipping past it.  It will go all the way down to a
+        // single byte, but a page is only written once a page's worth is
+        // buffered and the reserved-space checks in
+        // _WritePrioritisedBlock() starve everything else in a tiny
+        // buffer, so don't go below the parameter's 4KB minimum or two
+        // pages, whichever is larger.
+        const uint32_t min_bufsize = MAX(4096U, 2U * df_PageSize);
+        if (!writebuf.set_size_best(bufsize) || writebuf.get_size() < min_bufsize) {
+            writebuf.set_size(0);
+            DEV_PRINTF("Out of memory for logging\n");
             return;
         }
 
-        hal.console->printf("AP_Logger_Block: buffer size=%u\n", (unsigned)bufsize);
+        if (writebuf.get_size() != bufsize) {
+            DEV_PRINTF("AP_Logger_Block: reduced buffer %u/%u\n", (unsigned)writebuf.get_size(), (unsigned)bufsize);
+        }
+        DEV_PRINTF("AP_Logger_Block: buffer size=%u\n", (unsigned)writebuf.get_size());
         _initialised = true;
     }
 
@@ -105,7 +119,7 @@ void AP_Logger_Block::FinishWrite(void)
             chip_full = true;
             return;
         }
-        SectorErase(df_PageAdr / df_PagePerBlock);
+        SectorErase(get_block(df_PageAdr));
     }
 }
 
@@ -126,15 +140,7 @@ bool AP_Logger_Block::_WritePrioritisedBlock(const void *pBuffer, uint16_t size,
         return false;
     }
 
-    if (!WriteBlockCheckStartupMessages()) {
-        _dropped++;
-        return false;
-    }
-
-    if (!write_sem.take(1)) {
-         _dropped++;
-        return false;
-    }
+    WITH_SEMAPHORE(write_sem);
 
     const uint32_t space = writebuf.space();
 
@@ -149,7 +155,6 @@ bool AP_Logger_Block::_WritePrioritisedBlock(const void *pBuffer, uint16_t size,
         if (!must_dribble &&
             space < non_messagewriter_message_reserved_space(writebuf.get_size())) {
             // this message isn't dropped, it will be sent again...
-            write_sem.give();
             return false;
         }
         last_messagewrite_message_sent = now;
@@ -157,7 +162,6 @@ bool AP_Logger_Block::_WritePrioritisedBlock(const void *pBuffer, uint16_t size,
         // we reserve some amount of space for critical messages:
         if (!is_critical && space < critical_message_reserved_space(writebuf.get_size())) {
             _dropped++;
-            write_sem.give();
             return false;
         }
     }
@@ -165,13 +169,11 @@ bool AP_Logger_Block::_WritePrioritisedBlock(const void *pBuffer, uint16_t size,
     // if no room for entire message - drop it:
     if (space < size) {
         _dropped++;
-        write_sem.give();
         return false;
     }
 
     writebuf.write((uint8_t*)pBuffer, size);
     df_stats_gather(size, writebuf.space());
-    write_sem.give();
 
     return true;
 }
@@ -179,13 +181,12 @@ bool AP_Logger_Block::_WritePrioritisedBlock(const void *pBuffer, uint16_t size,
 // read from the page address and return the file number at that location
 uint16_t AP_Logger_Block::StartRead(uint32_t PageAdr)
 {
-    df_Read_PageAdr   = PageAdr;
-
     // copy flash page to buffer
     if (erase_started) {
+        df_Read_PageAdr = PageAdr;
         memset(buffer, 0xff, df_PageSize);
     } else {
-        PageToBuffer(df_Read_PageAdr);
+        PageToBuffer(PageAdr);
     }
     return ReadHeaders();
 }
@@ -207,7 +208,7 @@ uint16_t AP_Logger_Block::ReadHeaders()
     // we are at the start of a file, read the file header
     if (df_FilePage == 1) {
         struct FileHeader fh;
-        BlockRead(0, &fh, sizeof(fh));
+        BlockRead(sizeof(ph), &fh, sizeof(fh));
         df_FileTime = fh.utc_secs;
         df_Read_BufferIdx += sizeof(fh);
     }
@@ -235,14 +236,15 @@ bool AP_Logger_Block::ReadBlock(void *pBuffer, uint16_t size)
         df_Read_BufferIdx += n;
 
         if (df_Read_BufferIdx == df_PageSize) {
-            df_Read_PageAdr++;
-            if (df_Read_PageAdr > df_NumPages) {
-                df_Read_PageAdr = 1;
+            uint32_t new_page_addr = df_Read_PageAdr + 1;
+            if (new_page_addr > df_NumPages) {
+                new_page_addr = 1;
             }
             if (erase_started) {
                 memset(buffer, 0xff, df_PageSize);
+                df_Read_PageAdr = new_page_addr;
             } else {
-                PageToBuffer(df_Read_PageAdr);
+                PageToBuffer(new_page_addr);
             }
 
             // We are starting a new page - read FileNumber and FilePage
@@ -303,9 +305,12 @@ void AP_Logger_Block::periodic_1Hz()
 {
     AP_Logger_Backend::periodic_1Hz();
 
-    if (rate_limiter == nullptr && _front._params.blk_ratemax > 0) {
-        // setup rate limiting
-        rate_limiter = new AP_Logger_RateLimiter(_front, _front._params.blk_ratemax);
+    if (rate_limiter == nullptr &&
+        (_front._params.blk_ratemax > 0 ||
+         _front._params.disarm_ratemax > 0 ||
+         _front._log_pause)) {
+        // setup rate limiting if log rate max > 0Hz or log pause of streaming entries is requested
+        rate_limiter = NEW_NOTHROW AP_Logger_RateLimiter(_front, _front._params.blk_ratemax, _front._params.disarm_ratemax);
     }
     
     if (!io_thread_alive()) {
@@ -408,15 +413,15 @@ void AP_Logger_Block::validate_log_structure()
             last_file = file;
         }
         if (file == next_file) {
-            hal.console->printf("Found complete log %d at %X-%X\n", int(file), unsigned(page), unsigned(find_last_page_of_log(file)));
+            DEV_PRINTF("Found complete log %d at %X-%X\n", int(file), unsigned(page), unsigned(find_last_page_of_log(file)));
         }
     }
 
     if (file != 0xFFFF && file != next_file && page <= df_NumPages && page > 0) {
-        hal.console->printf("Found corrupt log %d at 0x%04X, erasing", int(file), unsigned(page));
+        DEV_PRINTF("Found corrupt log %d at 0x%04X, erasing", int(file), unsigned(page));
         df_EraseFrom = page;
     } else if (next_file != 0xFFFF && page > 0 && next_file > 1) { // chip is empty
-        hal.console->printf("Found %d complete logs at 0x%04X-0x%04X", int(next_file - first_file), unsigned(page_start), unsigned(page - 1));
+        DEV_PRINTF("Found %d complete logs at 0x%04X-0x%04X", int(next_file - first_file), unsigned(page_start), unsigned(page - 1));
     }
 }
 
@@ -544,7 +549,7 @@ void AP_Logger_Block::stop_logging_async(void)
 void AP_Logger_Block::start_new_log(void)
 {
     if (erase_started) {
-        // already erasing
+        // currently erasing
         return;
     }
 
@@ -827,7 +832,7 @@ bool AP_Logger_Block::io_thread_alive() const
 
 /*
   IO timer running on IO thread
-  The IO timer runs every 1ms or at 1Khz. The standard flash chip can write rougly 130Kb/s
+  The IO timer runs every 1ms or at 1Khz. The standard flash chip can write roughly 130Kb/s
   so there is little point in trying to write more than 130 bytes - or 1 page (256 bytes).
   The W25Q128FV datasheet gives tpp as typically 0.7ms yielding an absolute maximum rate of
   365Kb/s or just over a page per cycle.
@@ -864,20 +869,19 @@ void AP_Logger_Block::io_timer(void)
         WITH_SEMAPHORE(sem);
 
         const uint32_t sectors = df_NumPages / df_PagePerSector;
-        const uint32_t sectors_in_64k = 0x10000 / (df_PagePerSector * df_PageSize);
+        const uint32_t block_size = df_PagePerBlock * df_PageSize;
+        const uint32_t sectors_in_block = block_size / (df_PagePerSector * df_PageSize);
         uint32_t next_sector = get_sector(df_EraseFrom);
-        const uint32_t aligned_sector = sectors - (((df_NumPages - df_EraseFrom + 1) / df_PagePerSector) / sectors_in_64k) * sectors_in_64k;
+        const uint32_t aligned_sector = sectors - (((df_NumPages - df_EraseFrom + 1) / df_PagePerSector) / sectors_in_block) * sectors_in_block;
         while (next_sector < aligned_sector) {
             Sector4kErase(next_sector);
             io_timer_heartbeat = AP_HAL::millis();
             next_sector++;
         }
-        uint16_t blocks_erased = 0;
         while (next_sector < sectors) {
-            blocks_erased++;
-            SectorErase(next_sector / sectors_in_64k);
+            SectorErase(next_sector / sectors_in_block);
             io_timer_heartbeat = AP_HAL::millis();
-            next_sector += sectors_in_64k;
+            next_sector += sectors_in_block;
         }
         status_msg = StatusMessage::RECOVERY_COMPLETE;
         df_EraseFrom = 0;
@@ -926,6 +930,59 @@ void AP_Logger_Block::write_log_page()
     }
     FinishWrite();
     df_Write_FilePage++;
+}
+
+void AP_Logger_Block::flash_test()
+{
+    uint32_t pages_to_check = 128;
+    for (uint32_t i=1; i<=pages_to_check; i++) {
+        if ((i-1) % df_PagePerBlock == 0) {
+            printf("Block erase %u\n", get_block(i));
+            SectorErase(get_block(i));
+        }
+        memset(buffer, uint8_t(i), df_PageSize);
+        if (i<5) {
+            printf("Flash fill 0x%x\n", uint8_t(i));
+        } else if (i==5) {
+            printf("Flash fill pages 5-%u\n", pages_to_check);
+        }
+        BufferToPage(i);
+    }
+    for (uint32_t i=1; i<=pages_to_check; i++) {
+        if (i<5) {
+            printf("Flash check 0x%x\n", uint8_t(i));
+        } else if (i==5) {
+            printf("Flash check pages 5-%u\n", pages_to_check);
+        }
+        PageToBuffer(i);
+        uint32_t bad_bytes = 0;
+        uint32_t first_bad_byte = 0;
+        for (uint32_t j=0; j<df_PageSize; j++) {
+            if (buffer[j] != uint8_t(i)) {
+                bad_bytes++;
+                if (bad_bytes == 1) {
+                    first_bad_byte = j;
+                }
+            }
+        }
+        if (bad_bytes > 0) {
+            printf("Test failed: page %u, %u of %u bad bytes, first=0x%x\n",
+                i, bad_bytes, df_PageSize, buffer[first_bad_byte]);
+        }
+    }
+
+    // speed test
+    pages_to_check = 4096;  // 1mB / 8mB
+    for (uint32_t i=1; i<=pages_to_check; i++) {
+        if ((i-1) % df_PagePerBlock == 0) {
+            SectorErase(get_block(i));
+        }
+    }
+    uint32_t now_ms = AP_HAL::millis();
+    for (uint32_t i=1; i<=pages_to_check; i++) {
+        BufferToPage(i);
+    }
+    printf("Flash speed test: %ukB/s\n", unsigned((pages_to_check * df_PageSize * 1000) / (1024 * (AP_HAL::millis() - now_ms))));
 }
 
 #endif // HAL_LOGGING_BLOCK_ENABLED

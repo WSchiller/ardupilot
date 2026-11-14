@@ -4,6 +4,7 @@
 
 #include "AP_HAL_Namespace.h"
 #include "AP_HAL_Boards.h"
+#include <AP_Common/AP_Common.h>
 
 class AP_HAL::AnalogSource {
 public:
@@ -29,6 +30,8 @@ public:
     virtual void init() = 0;
     virtual AP_HAL::AnalogSource* channel(int16_t n) = 0;
 
+    virtual bool valid_analog_pin(uint16_t pin) const { return false; }
+
     // board 5V rail voltage in volts
     virtual float board_voltage(void) = 0;
 
@@ -41,6 +44,16 @@ public:
     // bitmask of all _power_flags bits ever set, so transient
     // failures can still be diagnosed
     virtual uint16_t accumulated_power_status_flags(void) const { return 0; }
+
+    // this enum class is 1:1 with MAVLink's MAV_POWER_STATUS enumeration!
+    enum class PowerStatusFlag : uint16_t {
+        BRICK_VALID = 1,                  // main brick power supply valid
+        SERVO_VALID = 2,                  // main servo power supply valid for FMU
+        USB_CONNECTED = 4,                // USB power is connected
+        PERIPH_OVERCURRENT = 8,           // peripheral supply is in over-current state
+        PERIPH_HIPOWER_OVERCURRENT = 16,  // hi-power peripheral supply is in over-current state
+        CHANGED = 32,                     // Power status has changed since boot
+    };
 
 #if HAL_WITH_MCU_MONITORING
     virtual float mcu_temperature(void) { return 0; }

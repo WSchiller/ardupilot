@@ -2,16 +2,13 @@
 /// @brief  Landing gear control library
 #pragma once
 
+#include "AP_LandingGear_config.h"
+
+#if AP_LANDINGGEAR_ENABLED
+
 #include <AP_Param/AP_Param.h>
 #include <AP_Common/AP_Common.h>
-
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
-#define DEFAULT_PIN_WOW 8
-#define DEFAULT_PIN_WOW_POL 1
-#else
-#define DEFAULT_PIN_WOW -1
-#define DEFAULT_PIN_WOW_POL 0
-#endif
+#include <AP_Logger/AP_Logger_config.h>
 
 /// @class  AP_LandingGear
 /// @brief  Class managing the control of landing gear
@@ -28,8 +25,7 @@ public:
     }
 
     /* Do not allow copies */
-    AP_LandingGear(const AP_LandingGear &other) = delete;
-    AP_LandingGear &operator=(const AP_LandingGear&) = delete;
+    CLASS_NO_COPY(AP_LandingGear);
     
     // get singleton instance
     static AP_LandingGear *get_singleton(void) {
@@ -98,9 +94,9 @@ private:
     AP_Int8     _pin_deployed_polarity;
     AP_Int8     _pin_weight_on_wheels;
     AP_Int8     _pin_weight_on_wheels_polarity;
-    AP_Int16    _deploy_alt;
-    AP_Int16    _retract_alt;
-    AP_Int16    _options;
+    AP_Int16    _deploy_alt_m;
+    AP_Int16    _retract_alt_m;
+    AP_UInt16   _options;
 
     // bitmask of options
     enum class Option : uint16_t {
@@ -112,7 +108,7 @@ private:
     bool        _deployed;              // true if the landing gear has been deployed, initialized false
     bool        _have_changed;          // have we changed the servo state?
 
-    int16_t     _last_height_above_ground;
+    float       _last_height_above_ground_m;
     
     // debounce
     LG_WOW_State wow_state_current = LG_WOW_UNKNOWN;
@@ -127,8 +123,14 @@ private:
     /// deploy - deploy the landing gear
     void deploy();
 
+#if HAL_LOGGING_ENABLED
     // log weight on wheels state
     void log_wow_state(LG_WOW_State state);
+#else
+    void log_wow_state(LG_WOW_State state) {}
+#endif
 
     static AP_LandingGear *_singleton;
 };
+
+#endif  // AP_LANDINGGEAR_ENABLED

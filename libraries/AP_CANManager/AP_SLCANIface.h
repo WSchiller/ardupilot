@@ -17,9 +17,11 @@
 
 #pragma once
 
-#include <AP_HAL/AP_HAL.h>
+#include "AP_CANManager_config.h"
 
-#if HAL_MAX_CAN_PROTOCOL_DRIVERS
+#if AP_CAN_SLCAN_ENABLED
+
+#include <AP_HAL/AP_HAL.h>
 #include "AP_HAL/utility/RingBuffer.h"
 #include <AP_Param/AP_Param.h>
 
@@ -50,7 +52,9 @@ class CANIface: public AP_HAL::CANIface
     bool handle_FrameRTRStd(const char* cmd);
     bool handle_FrameRTRExt(const char* cmd);
     bool handle_FrameDataStd(const char* cmd);
-    bool handle_FrameDataExt(const char* cmd);
+    bool handle_FrameDataExt(const char* cmd, bool canfd);
+
+    bool handle_FDFrameDataExt(const char* cmd);
 
     // Parsing bytes received on the serial port
     inline void addByte(const uint8_t byte);
@@ -63,15 +67,16 @@ class CANIface: public AP_HAL::CANIface
     char buf_[SLCAN_BUFFER_SIZE + 1]; // buffer to record raw frame nibbles before parsing
     int16_t pos_ = 0; // position in the buffer recording nibble frames before parsing
     AP_HAL::UARTDriver* _port; // UART interface port reference to be used for SLCAN iface
+    bool _enabled; // Flag to check whether we are allowed to use _port
 
     ObjectBuffer<AP_HAL::CANIface::CanRxItem> rx_queue_; // Parsed Rx Frame queue
 
-    const uint32_t _serial_lock_key = 0x53494442; // Key used to lock UART port for use by slcan
+    static constexpr uint32_t _serial_lock_key = 0x53494442; // Key used to lock UART port for use by slcan
 
     AP_Int8 _slcan_can_port;
     AP_Int8 _slcan_ser_port;
-    AP_Int8 _slcan_timeout;
-    AP_Int8 _slcan_start_delay;
+    AP_UInt8 _slcan_timeout;
+    AP_UInt8 _slcan_start_delay;
 
     bool _slcan_start_req;
     uint32_t _slcan_start_req_time;
@@ -91,7 +96,7 @@ public:
 
     static const struct AP_Param::GroupInfo var_info[];
 
-    bool init(const uint32_t bitrate, const OperatingMode mode) override
+    bool init(const uint32_t bitrate) override
     {
         return false;
     }
@@ -99,19 +104,18 @@ public:
     // Initialisation of SLCAN Passthrough method of operation
     bool init_passthrough(uint8_t i);
 
-    void reset_params();
-    int8_t get_iface_num() const
+    void set_can_iface(AP_HAL::CANIface* can_iface)
     {
-        return _iface_num;
+        _can_iface = can_iface;
     }
 
+    void reset_params();
+
     // Overriden methods
-    bool set_event_handle(AP_HAL::EventHandle* evt_handle) override;
-    uint16_t getNumFilters() const override;
+    bool set_event_handle(AP_HAL::BinarySemaphore *sem_handle) override;
     uint32_t getErrorCount() const override;
     void get_stats(ExpandingString &) override;
     bool is_busoff() const override;
-    bool configureFilters(const CanFilterConfig* filter_configs, uint16_t num_configs) override;
     void flush_tx() override;
     void clear_rx() override;
     bool is_initialized() const override;
@@ -123,8 +127,20 @@ public:
 
     int16_t receive(AP_HAL::CANFrame& out_frame, uint64_t& rx_time,
                     AP_HAL::CANIface::CanIOFlags& out_flags) override;
+
+protected:
+    int8_t get_iface_num() const override {
+        return _iface_num;
+    }
+
+    bool add_to_rx_queue(const AP_HAL::CANIface::CanRxItem &frm) override {
+        return rx_queue_.push(frm);
+    }
+    bool is_enabled() const {
+        return (_port != nullptr) && _enabled;
+    }
 };
 
 }
 
-#endif
+#endif  // AP_CAN_SLCAN_ENABLED

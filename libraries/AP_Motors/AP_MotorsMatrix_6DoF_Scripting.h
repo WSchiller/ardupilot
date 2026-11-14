@@ -1,5 +1,8 @@
 #pragma once
-#if AP_SCRIPTING_ENABLED
+
+#include "AP_Motors_config.h"
+
+#if AP_MOTORS_FRAME_6DOF_SCRIPTING_ENABLED
 
 #include <AP_Common/AP_Common.h>
 #include <AP_Math/AP_Math.h>
@@ -10,8 +13,8 @@ class AP_MotorsMatrix_6DoF_Scripting : public AP_MotorsMatrix {
 public:
 
     /// Constructor
-    AP_MotorsMatrix_6DoF_Scripting(uint16_t loop_rate, uint16_t speed_hz = AP_MOTORS_SPEED_DEFAULT) :
-        AP_MotorsMatrix(loop_rate, speed_hz)
+    AP_MotorsMatrix_6DoF_Scripting(uint16_t speed_hz = AP_MOTORS_SPEED_DEFAULT) :
+        AP_MotorsMatrix(speed_hz)
     {
         if (_singleton != nullptr) {
             AP_HAL::panic("AP_MotorsMatrix 6DoF must be singleton");
@@ -37,14 +40,14 @@ public:
     // if the expected number of motors have been setup then set as initalized
     bool init(uint8_t expected_num_motors) override;
 
-    const char* get_frame_string() const override { return "6DoF scripting"; }
-
 protected:
     // output - sends commands to the motors
     void output_armed_stabilizing() override;
 
     // nothing to do for setup, scripting will mark as initalized when done
     void setup_motors(motor_frame_class frame_class, motor_frame_type frame_type) override {};
+
+    const char* _get_frame_string() const override { return "6DoF scripting"; }
 
     float _forward_factor[AP_MOTORS_MAX_NUM_MOTORS];      // each motors contribution to forward thrust
     float _right_factor[AP_MOTORS_MAX_NUM_MOTORS];        // each motors contribution to right thrust
@@ -64,4 +67,4 @@ private:
 
 };
 
-#endif // AP_SCRIPTING_ENABLED
+#endif  // AP_MOTORS_FRAME_6DOF_SCRIPTING_ENABLED

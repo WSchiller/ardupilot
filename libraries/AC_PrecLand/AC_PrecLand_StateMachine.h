@@ -1,7 +1,11 @@
 #pragma once
 
+#include "AC_PrecLand_config.h"
+
+#if AC_PRECLAND_ENABLED
+
+#include <AC_PrecLand/AC_PrecLand.h>
 #include <AP_Math/AP_Math.h>
-#include <GCS_MAVLink/GCS.h>
 
 // This class constantly monitors what the status of the landing target is
 // If it is not in sight, depending on user parameters, it decides what measures can be taken to bring the target back in sight
@@ -17,10 +21,9 @@ public:
     };
 
     // Do not allow copies
-    AC_PrecLand_StateMachine(const AC_PrecLand_StateMachine &other) = delete;
-    AC_PrecLand_StateMachine &operator=(const AC_PrecLand_StateMachine&) = delete;
+    CLASS_NO_COPY(AC_PrecLand_StateMachine);
 
-    // Initialize the state machine. This is called everytime vehicle switches mode
+    // Initialize the state machine. This is called every time vehicle switches mode
     void init();
 
     // Current status of the precland state machine
@@ -42,8 +45,8 @@ public:
     // 3. We have the target in sight and can continue landing. 4. The sensor is out of range
     // This method deals with all of these scenarios
     // Returns the action needed to be done by the vehicle.
-    // Parameters: Vector3f "retry_pos_m" is filled with the required location if we need to retry landing.
-    Status update(Vector3f &retry_pos_m);
+    // Parameters: Vector3p "retry_pos_m" is filled with the required location if we need to retry landing.
+    Status update(Vector3p &retry_pos_m);
 
     // This is only called when the current status of the state machine returns "failsafe" and will return the action that the vehicle should do
     // At the moment this method only allows you to stop in air permanently, or land vertically
@@ -68,14 +71,14 @@ private:
     // Target is lost (i.e we had it in sight some time back), this method helps decide on what needs to be done next
     // The chosen action depends on user set landing strictness and will be returned by this function
     // Parameters: Vector3f "retry_pos_m" is filled with the required location if we need to retry landing.
-    Status get_target_lost_actions(Vector3f &retry_pos_m);
+    Status get_target_lost_actions(Vector3p &retry_pos_m);
 
     // Retry landing based on a previously known location of the landing target
     // Returns the action that should be taken by the vehicle
     // Vector3f "retry_pos_m" is filled with the required location.
-    Status retry_landing(Vector3f &retry_pos_m);
+    Status retry_landing(Vector3p &retry_pos_m);
 
-    // Reset the landing statemachine. This needs to be called everytime the landing target is back in sight.
+    // Reset the landing statemachine. This needs to be called every time the landing target is back in sight.
     // So that if the landing target goes out of sight again, we can start the failed landing procedure back from the beginning stage
     void reset_failed_landing_statemachine();
 
@@ -103,3 +106,5 @@ private:
     uint32_t failsafe_start_ms; // timestamp of when failsafe was triggered
 
 };
+
+#endif // AC_PRECLAND_ENABLED

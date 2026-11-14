@@ -15,11 +15,12 @@
 
 #pragma once
 
+#include "AP_Proximity_config.h"
+
+#if AP_PROXIMITY_AIRSIMSITL_ENABLED
+
 #include "AP_Proximity_Backend.h"
 
-#if HAL_PROXIMITY_ENABLED
-
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 #include <SITL/SITL.h>
 
 class AP_Proximity_AirSimSITL : public AP_Proximity_Backend
@@ -33,8 +34,8 @@ public:
     void update(void) override;
 
     // get maximum and minimum distances (in meters) of sensor
-    float distance_max() const override;
-    float distance_min() const override;
+    float distance_max_m() const override;
+    float distance_min_m() const override;
 
     // get distance upwards in meters. returns true on success
     bool get_upward_distance(float &distance) const override;
@@ -44,6 +45,6 @@ private:
     AP_Proximity_Temp_Boundary temp_boundary;
 
 };
-#endif // CONFIG_HAL_BOARD
 
-#endif // HAL_PROXIMITY_ENABLED
+#endif // AP_PROXIMITY_AIRSIMSITL_ENABLED
+

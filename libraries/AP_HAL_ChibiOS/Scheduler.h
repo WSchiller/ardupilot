@@ -26,8 +26,9 @@
 #define APM_MAIN_PRIORITY       180
 #define APM_TIMER_PRIORITY      181
 #define APM_RCOUT_PRIORITY      181
-#define APM_RCIN_PRIORITY       177
+#define APM_LED_PRIORITY         60
 #define APM_UART_PRIORITY        60
+#define APM_NET_PRIORITY         60
 #define APM_UART_UNBUFFERED_PRIORITY 181
 #define APM_STORAGE_PRIORITY     59
 #define APM_IO_PRIORITY          58
@@ -39,6 +40,10 @@
  */
 #ifndef APM_MAIN_PRIORITY_BOOST
 #define APM_MAIN_PRIORITY_BOOST 182
+#endif
+
+#ifndef APM_RCIN_PRIORITY
+#define APM_RCIN_PRIORITY      177
 #endif
 
 #ifndef APM_SPI_PRIORITY
@@ -72,12 +77,25 @@
 #endif
 
 #ifndef STORAGE_THD_WA_SIZE
+#if AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED
+// room for the NPTR packet and the GCS text
+#define STORAGE_THD_WA_SIZE 1536
+#else
 #define STORAGE_THD_WA_SIZE 1024
+#endif
 #endif
 
 #ifndef MONITOR_THD_WA_SIZE
-#define MONITOR_THD_WA_SIZE 512
+#define MONITOR_THD_WA_SIZE 1024
 #endif
+
+// MEMCHECK_ENABLED checks the bottom 1kB of RAM on H7 to ensure it is
+// always zero.  We have compile-time options to enforce no-access to
+// that bottom 1kB, and if either is enabled we must not run this memory
+// check!  MEMPROTECT_TRACE does its own equivalent scan, disarming the
+// region first, in Scheduler::memprotect_scan().
+#define MEMCHECK_ENABLED (defined(STM32H7) && !AP_BOARDCONFIG_MCU_MEMPROTECT_ENABLED && !AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED)
+
 
 /* Scheduler implementation: */
 class ChibiOS::Scheduler : public AP_HAL::Scheduler {
@@ -110,7 +128,6 @@ public:
       be used to prevent watchdog reset during expected long delays
       A value of zero cancels the previous expected delay
      */
-    void     _expect_delay_ms(uint32_t ms);
     void     expect_delay_ms(uint32_t ms) override;
 
     /*
@@ -139,6 +156,12 @@ public:
     // pat the watchdog
     void watchdog_pat(void);
 
+#if AP_USB_DEBUG_ENABLED
+    // Discard watchdog age samples spanning a debugger stop. The monitor waits
+    // for a fresh main-loop pat; the hardware watchdog still detects a hang.
+    void usb_debug_resume() { usb_debug_epoch++; }
+#endif
+
 private:
     bool _initialized;
     volatile bool _hal_initialized;
@@ -148,7 +171,6 @@ private:
     uint32_t expect_delay_start;
     uint32_t expect_delay_length;
     uint32_t expect_delay_nesting;
-    HAL_Semaphore expect_delay_sem;
 
     AP_HAL::MemberProc _timer_proc[CHIBIOS_SCHEDULER_MAX_TIMER_PROCS];
     uint8_t _num_timer_procs;
@@ -158,6 +180,10 @@ private:
     uint8_t _num_io_procs;
     volatile bool _in_io_proc;
     uint32_t last_watchdog_pat_ms;
+#if AP_USB_DEBUG_ENABLED
+    volatile uint32_t usb_debug_epoch;
+    uint32_t watchdog_epoch;
+#endif
 
     thread_t* _timer_thread_ctx;
     thread_t* _rcout_thread_ctx;
@@ -186,11 +212,27 @@ private:
     void _run_io(void);
     static void thread_create_trampoline(void *ctx);
 
-#if defined STM32H7
+#if MEMCHECK_ENABLED
     void check_low_memory_is_zero();
+#endif
+
+#if AP_BOARDCONFIG_MCU_MEMPROTECT_TRACE_ENABLED
+    // log any trapped access to the reserved first 1k, and re-arm the region
+    void memprotect_trace_tick(void);
+    // check the region for writes the MPU can't see, ie DMA
+    void memprotect_scan(void);
+    uint32_t last_nptr_gcs_ms;
 #endif
 
     // check for free stack space
     void check_stack_free(void);
+
+#if defined(HAL_GPIO_PIN_EXT_WDOG)
+    // external watchdog GPIO support
+    void ext_watchdog_pat(uint32_t now_ms);
+    uint32_t last_ext_watchdog_ms;
+#endif
+
+    static void try_force_mutex(void);
 };
 #endif

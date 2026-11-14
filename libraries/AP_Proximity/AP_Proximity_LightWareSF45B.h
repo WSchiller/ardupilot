@@ -1,18 +1,28 @@
 #pragma once
 
-#include "AP_Proximity_LightWareSerial.h"
+#include "AP_Proximity_config.h"
 
-#if HAL_PROXIMITY_ENABLED
+#if AP_PROXIMITY_LIGHTWARE_SF45B_ENABLED
+#include "AP_Proximity_Backend_Serial.h"
+#include <AP_LightWareSerial/AP_LightWareSerial.h>
+
 #include <Filter/Filter.h>
 
-class AP_Proximity_LightWareSF45B : public AP_Proximity_LightWareSerial
+class AP_Proximity_LightWareSF45B : public AP_Proximity_Backend_Serial, public AP_LightWareSerial
 {
 
 public:
+    using AP_Proximity_Backend_Serial::_uart; // needed to disambiguate _uart in both base classes and avoid compiler error
+
     // constructor
     AP_Proximity_LightWareSF45B(AP_Proximity &_frontend,
-                                AP_Proximity::Proximity_State &_state) :
-            AP_Proximity_LightWareSerial(_frontend, _state) {}
+                                AP_Proximity::Proximity_State &_state,
+                                AP_Proximity_Params& _params,
+                                uint8_t serial_instance) :
+            AP_Proximity_Backend_Serial(_frontend, _state, _params, serial_instance),
+            AP_LightWareSerial(AP_Proximity_Backend_Serial::_uart)
+    {
+    }
 
     uint16_t rxspace() const override {
         return 1280;
@@ -22,8 +32,8 @@ public:
     void update(void) override;
 
     // get maximum and minimum distances (in meters) of sensor
-    float distance_max() const override { return 50.0f; }
-    float distance_min() const override { return 0.20f; }
+    float distance_max_m() const override { return 50.0f; }
+    float distance_min_m() const override { return 0.20f; }
 
 private:
 
@@ -79,7 +89,7 @@ private:
     uint32_t _last_init_ms;                 // system time of last re-initialisation
     uint32_t _last_distance_received_ms;    // system time of last distance measurement received from sensor
     bool _init_complete;                    // true once sensor initialisation is complete
-    ModeFilterInt16_Size5 _distance_filt{2};// mode filter to reduce glitches
+    ModeFilterInt16_Size3 _distance_filt{1};// mode filter to reduce glitches
 
     // 3D boundary face and distance for latest readings
     AP_Proximity_Boundary_3D::Face _face;   // face of most recently received distance
@@ -102,4 +112,4 @@ private:
 
 };
 
-#endif // HAL_PROXIMITY_ENABLED
+#endif // AP_PROXIMITY_LIGHTWARE_SF45B_ENABLED

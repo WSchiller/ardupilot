@@ -1,8 +1,10 @@
 #pragma once
 
-#include "AP_Proximity_Backend_Serial.h"
+#include "AP_Proximity_config.h"
 
-#if HAL_PROXIMITY_ENABLED
+#if AP_PROXIMITY_LIGHTWARE_SF40C_ENABLED
+
+#include "AP_Proximity_Backend_Serial.h"
 
 #define PROXIMITY_SF40C_TIMEOUT_MS            200   // requests timeout after 0.2 seconds
 #define PROXIMITY_SF40C_PAYLOAD_LEN_MAX       256   // maximum payload size we can accept (in some configurations sensor may send as large as 1023)
@@ -23,8 +25,8 @@ public:
     void update(void) override;
 
     // get maximum and minimum distances (in meters) of sensor
-    float distance_max() const override { return 100.0f; }
-    float distance_min() const override { return 0.20f; }
+    float distance_max_m() const override { return 100.0f; }
+    float distance_min_m() const override { return 0.20f; }
 
 private:
 
@@ -152,4 +154,4 @@ private:
     uint16_t buff_to_uint16(uint8_t b0, uint8_t b1) const;
 };
 
-#endif // HAL_PROXIMITY_ENABLED
+#endif // AP_PROXIMITY_LIGHTWARE_SF40C_ENABLED

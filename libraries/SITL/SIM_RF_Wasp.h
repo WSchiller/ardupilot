@@ -15,7 +15,7 @@
 /*
   Simulator for the Wasp serial rangefinder
 
-./Tools/autotest/sim_vehicle.py --gdb --debug -v ArduCopter -A --uartF=sim:wasp --speedup=1
+./Tools/autotest/sim_vehicle.py --gdb --debug -v ArduCopter -A --serial5=sim:wasp --speedup=1
 
 param set SERIAL5_PROTOCOL 9
 param set RNGFND1_TYPE 18
@@ -36,9 +36,11 @@ namespace SITL {
 class RF_Wasp : public SerialRangeFinder {
 public:
 
+    static SerialRangeFinder *create() { return NEW_NOTHROW RF_Wasp(); }
+
     void update(float range) override;
 
-    uint32_t packet_for_alt(uint16_t alt_cm, uint8_t *buffer, uint8_t buflen) override;
+    uint32_t packet_for_alt(float alt_m, uint8_t *buffer, uint8_t buflen) override;
 
     // 20Hz; if Wasp driver doesn't get a reading each time its update
     // is called it goes NoData
@@ -64,10 +66,11 @@ private:
     const struct {
         const char *name;
         char *value;
+        uint8_t value_size;
     } string_configs[3] {
-        { "FMT", config.format },
-        { "BAUD", config.baud },
-        { "LBE", config.lbe },
+        { "FMT", config.format, sizeof(config.format) },
+        { "BAUD", config.baud, sizeof(config.baud) },
+        { "LBE", config.lbe, sizeof(config.lbe) },
     };
     const struct {
         const char *name;

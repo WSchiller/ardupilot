@@ -13,14 +13,11 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "AP_Proximity_config.h"
+
+#if AP_PROXIMITY_AIRSIMSITL_ENABLED
+
 #include "AP_Proximity_AirSimSITL.h"
-
-#if HAL_PROXIMITY_ENABLED
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
-#include <AP_HAL/AP_HAL.h>
-#include <stdio.h>
-
-extern const AP_HAL::HAL& hal;
 
 #define PROXIMITY_MAX_RANGE 100.0f
 #define PROXIMITY_ACCURACY  0.1f        // minimum distance (in meters) between objects sent to object database
@@ -37,10 +34,10 @@ void AP_Proximity_AirSimSITL::update(void)
     set_status(AP_Proximity::Status::Good);
 
     // reset all faces to default so that it can be filled with the fresh lidar data
-    boundary.reset();
+    frontend.boundary.reset();
 
     // precalculate sq of min distance
-    const float distance_min_sq = sq(distance_min());
+    const float distance_min_sq = sq(distance_min_m());
 
     // variables used to reduce data sent to object database
     const float accuracy_sq = sq(PROXIMITY_ACCURACY);
@@ -62,7 +59,7 @@ void AP_Proximity_AirSimSITL::update(void)
 
             // add distance to the 3D boundary
             const float yaw_angle_deg = wrap_360(degrees(atan2f(point.y, point.x)));
-            const AP_Proximity_Boundary_3D::Face face = boundary.get_face(yaw_angle_deg);
+            const AP_Proximity_Boundary_3D::Face face = frontend.boundary.get_face(yaw_angle_deg);
             // store the min distance in each face in a temp boundary
             temp_boundary.add_distance(face, yaw_angle_deg, safe_sqrt(distance_sq));
 
@@ -77,16 +74,16 @@ void AP_Proximity_AirSimSITL::update(void)
         }
     }
     // copy temp boundary to real boundary
-    temp_boundary.update_3D_boundary(boundary);
+    temp_boundary.update_3D_boundary(state.instance, frontend.boundary);
 }
 
 // get maximum and minimum distances (in meters) of primary sensor
-float AP_Proximity_AirSimSITL::distance_max() const
+float AP_Proximity_AirSimSITL::distance_max_m() const
 {
     return PROXIMITY_MAX_RANGE;
 }
 
-float AP_Proximity_AirSimSITL::distance_min() const
+float AP_Proximity_AirSimSITL::distance_min_m() const
 {
     return 0.0f;
 }
@@ -98,6 +95,4 @@ bool AP_Proximity_AirSimSITL::get_upward_distance(float &distance) const
     return false;
 }
 
-#endif // CONFIG_HAL_BOARD == HAL_BOARD_SITL
-
-#endif // HAL_PROXIMITY_ENABLED
+#endif // AP_PROXIMITY_AIRSIMSITL_ENABLED

@@ -1,8 +1,5 @@
 #pragma once
 
-#include <SITL/SITL.h>
-#include <GCS_MAVLink/GCS.h>
-
 /*
  This is a 'mock' implementation of an INS that does nothing and gives a level HUD, but does it successfully.   
  Its useful for boards that don't have any form of IMU accel/gyro etc connected just yet, but where u want to boot-up "successfully" anyway, 
@@ -44,14 +41,12 @@ private:
     const uint16_t gyro_sample_hz;
     const uint16_t accel_sample_hz;
 
-    uint8_t gyro_instance;
-    uint8_t accel_instance;
     uint64_t next_gyro_sample;
     uint64_t next_accel_sample;
     float gyro_time;
     float accel_time;
-    float gyro_motor_phase[12];
-    float accel_motor_phase[12];
+    float gyro_motor_phase[32];
+    float accel_motor_phase[32];
 
     static uint8_t bus_id;
 };

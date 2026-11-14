@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+
+# flake8: noqa
 '''
 these tables are generated from the STM32 datasheet stm32l496ze.pdf
 '''
@@ -36,6 +38,10 @@ mcu = {
     ],
 
     'EXPECTED_CLOCK' : 80000000,
+
+    'DEFINES' : {
+        'STM32L4' : '1',
+    }
 }
 
 DMA_Map = {

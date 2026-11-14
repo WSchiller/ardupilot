@@ -18,12 +18,15 @@
  *
  */
 
+#include "AP_RangeFinder_analog.h"
+
+#if AP_RANGEFINDER_ANALOG_ENABLED
+
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Common/AP_Common.h>
 #include <AP_Math/AP_Math.h>
 #include "AP_RangeFinder.h"
 #include "AP_RangeFinder_Params.h"
-#include "AP_RangeFinder_analog.h"
 
 extern const AP_HAL::HAL& hal;
 
@@ -86,7 +89,7 @@ void AP_RangeFinder_analog::update(void)
     float scaling = params.scaling;
     float offset  = params.offset;
     RangeFinder::Function function = (RangeFinder::Function)params.function.get();
-    int16_t _max_distance_cm = params.max_distance_cm;
+    const float _max_distance = max_distance();
 
     switch (function) {
     case RangeFinder::Function::LINEAR:
@@ -103,8 +106,8 @@ void AP_RangeFinder_analog::update(void)
         } else {
             dist_m = scaling / (v - offset);
         }
-        if (dist_m > _max_distance_cm * 0.01f) {
-            dist_m = _max_distance_cm * 0.01f;
+        if (dist_m > _max_distance) {
+            dist_m = _max_distance;
         }
         break;
     }
@@ -118,3 +121,4 @@ void AP_RangeFinder_analog::update(void)
     update_status();
 }
 
+#endif  // AP_RANGEFINDER_ANALOG_ENABLED

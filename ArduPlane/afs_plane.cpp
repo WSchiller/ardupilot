@@ -4,7 +4,7 @@
 
 #include "Plane.h"
 
-#if ADVANCED_FAILSAFE == ENABLED
+#if AP_ADVANCEDFAILSAFE_ENABLED
 
 /*
   setup radio_out values for all channels to termination values
@@ -14,7 +14,7 @@ void AP_AdvancedFailsafe_Plane::terminate_vehicle(void)
 #if HAL_QUADPLANE_ENABLED
     if (plane.quadplane.available() && _terminate_action == TERMINATE_ACTION_LAND) {
         // perform a VTOL landing
-        plane.set_mode(plane.mode_qland, ModeReason::FENCE_BREACHED);
+        IGNORE_RETURN(plane.set_mode(plane.mode_qland, ModeReason::FENCE_BREACHED));
         return;
     }
 #endif
@@ -24,6 +24,10 @@ void AP_AdvancedFailsafe_Plane::terminate_vehicle(void)
     if (_terminate_action == TERMINATE_ACTION_LAND) {
         plane.landing.terminate();
     } else {
+        // remove flap slew limiting
+        SRV_Channels::set_slew_rate(SRV_Channel::k_flap_auto, 0.0, 100, plane.G_Dt);
+        SRV_Channels::set_slew_rate(SRV_Channel::k_flap, 0.0, 100, plane.G_Dt);
+
         // aerodynamic termination is the default approach to termination
         SRV_Channels::set_output_scaled(SRV_Channel::k_flap_auto, 100.0);
         SRV_Channels::set_output_scaled(SRV_Channel::k_flap, 100.0);
@@ -80,7 +84,7 @@ void AP_AdvancedFailsafe_Plane::setup_IO_failsafe(void)
 #if HAL_QUADPLANE_ENABLED
     if (plane.quadplane.available()) {
         // setup AP_Motors outputs for failsafe
-        uint16_t mask = plane.quadplane.motors->get_motor_mask();
+        uint32_t mask = plane.quadplane.motors->get_motor_mask();
         hal.rcout->set_failsafe_pwm(mask, plane.quadplane.motors->get_pwm_output_min());
     }
 #endif
@@ -99,4 +103,11 @@ AP_AdvancedFailsafe::control_mode AP_AdvancedFailsafe_Plane::afs_mode(void)
     }
     return AP_AdvancedFailsafe::AFS_STABILIZED;
 }
-#endif // ADVANCED_FAILSAFE
+
+//to force entering auto mode when datalink loss 
+ void AP_AdvancedFailsafe_Plane::set_mode_auto(void)
+ {
+    IGNORE_RETURN(plane.set_mode(plane.mode_auto,ModeReason::GCS_FAILSAFE));
+ }
+
+#endif // AP_ADVANCEDFAILSAFE_ENABLED

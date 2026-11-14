@@ -1,5 +1,10 @@
 #include "AP_Winch_PWM.h"
+
+#if AP_WINCH_PWM_ENABLED
+
+#include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
+#include <SRV_Channel/SRV_Channel.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -32,7 +37,7 @@ void AP_Winch_PWM::update()
 void AP_Winch_PWM::control_winch()
 {
     const uint32_t now_ms = AP_HAL::millis();
-    float dt = (now_ms - control_update_ms) / 1000.0f;
+    float dt = (now_ms - control_update_ms) * 0.001f;
     if (dt > 1.0f) {
         dt = 0.0f;
     }
@@ -88,6 +93,7 @@ void AP_Winch_PWM::send_status(const GCS_MAVLINK &channel)
 }
 
 // write log
+#if HAL_LOGGING_ENABLED
 void AP_Winch_PWM::write_log()
 {
     AP::logger().Write_Winch(
@@ -103,3 +109,6 @@ void AP_Winch_PWM::write_log()
             0,              // voltage (unsupported)
             0);             // temp (unsupported)
 }
+#endif
+
+#endif  // AP_WINCH_PWM_ENABLED

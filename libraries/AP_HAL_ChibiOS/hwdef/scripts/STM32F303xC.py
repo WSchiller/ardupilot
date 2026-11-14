@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+
+# flake8: noqa
 '''
 these tables are generated from the STM32 datasheets for the
 STM32F303
@@ -20,7 +22,12 @@ mcu = {
         (0x10000000,   8, 2), # CCM memory, faster, but not DMA safe
     ],
 
-    'EXPECTED_CLOCK' : 72000000
+    'EXPECTED_CLOCK' : 72000000,
+
+    'DEFINES' : {
+        'STM32F3' : '1',
+    }
+
 }
 
 AltFunction_map = {

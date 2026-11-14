@@ -14,7 +14,7 @@ namespace Linux {
 
 class RCOutput_PCA9685 : public AP_HAL::RCOutput {
 public:
-    RCOutput_PCA9685(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev,
+    RCOutput_PCA9685(AP_HAL::I2CDevice *dev,
                      uint32_t external_clock,
                      uint8_t channel_offset,
                      int16_t oe_pin_number);
@@ -33,13 +33,16 @@ public:
     void     push() override;
     uint16_t read(uint8_t ch) override;
     void     read(uint16_t* period_us, uint8_t len) override;
+    bool     supports_gpio() override { return true; };
+    void     write_gpio(uint8_t chan, bool active) override;
 
 private:
     void reset();
+    void write_raw(uint8_t ch, uint16_t period_us);
 
     AP_HAL::DigitalSource *_enable_pin;
-    AP_HAL::OwnPtr<AP_HAL::I2CDevice> _dev;
-    uint16_t _frequency;
+    AP_HAL::I2CDevice *_dev;
+    uint16_t _frequency = 50;
     float _osc_clock;
 
     uint16_t *_pulses_buffer;
@@ -48,7 +51,8 @@ private:
     bool _corking = false;
     uint8_t _channel_offset;
     int16_t _oe_pin_number;
-    uint16_t _pending_write_mask;
+    uint32_t _pending_write_mask;
+    uint32_t _is_gpio_mask;
 };
 
 }

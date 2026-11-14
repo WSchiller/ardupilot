@@ -1,8 +1,10 @@
 #pragma once
 
-#include "AP_Proximity_Backend.h"
+#include "AP_Proximity_config.h"
 
-#if HAL_PROXIMITY_ENABLED
+#if AP_PROXIMITY_RANGEFINDER_ENABLED
+
+#include "AP_Proximity_Backend.h"
 
 #define PROXIMITY_RANGEFIDER_TIMEOUT_MS 200 // requests timeout after 0.2 seconds
 
@@ -17,8 +19,8 @@ public:
     void update(void) override;
 
     // get maximum and minimum distances (in meters) of sensor
-    float distance_max() const override { return _distance_max; }
-    float distance_min() const override { return _distance_min; }
+    float distance_max_m() const override { return _distance_max; }
+    float distance_min_m() const override { return _distance_min; }
 
     // get distance upwards in meters. returns true on success
     bool get_upward_distance(float &distance) const override;
@@ -35,4 +37,4 @@ private:
     float _distance_upward = -1;        // upward distance in meters, negative if the last reading was out of range
 };
 
-#endif // HAL_PROXIMITY_ENABLED
+#endif // AP_PROXIMITY_RANGEFINDER_ENABLED

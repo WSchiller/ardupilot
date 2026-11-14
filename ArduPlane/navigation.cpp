@@ -8,7 +8,7 @@ void Plane::loiter_angle_reset(void)
     loiter.sum_cd = 0;
     loiter.total_cd = 0;
     loiter.reached_target_alt = false;
-    loiter.unable_to_acheive_target_alt = false;
+    loiter.unable_to_achieve_target_alt = false;
 }
 
 /*
@@ -58,7 +58,7 @@ void Plane::loiter_angle_update(void)
             }
         }
         if (terrain_status_ok &&
-            fabsf(altitude_agl - target_altitude.terrain_alt_cm*0.01) < 5) {
+            fabsF(altitude_agl - target_altitude.terrain_alt_cm*0.01) < 5) {
             reached_target_alt = true;
         } else
 #endif
@@ -69,12 +69,12 @@ void Plane::loiter_angle_update(void)
 
     if (reached_target_alt) {
         loiter.reached_target_alt = true;
-        loiter.unable_to_acheive_target_alt = false;
+        loiter.unable_to_achieve_target_alt = false;
         loiter.next_sum_lap_cd = loiter.sum_cd + lap_check_interval_cd;
 
     } else if (!loiter.reached_target_alt && labs(loiter.sum_cd) >= loiter.next_sum_lap_cd) {
-        // check every few laps for scenario where up/downdrafts inhibit you from loitering up/down for too long
-        loiter.unable_to_acheive_target_alt = labs(current_loc.alt - loiter.start_lap_alt_cm) < 500;
+        // check every few laps for scenario where up/downward inhibit you from loitering up/down for too long
+        loiter.unable_to_achieve_target_alt = labs(current_loc.alt - loiter.start_lap_alt_cm) < 500;
         loiter.start_lap_alt_cm = current_loc.alt;
         loiter.next_sum_lap_cd += lap_check_interval_cd;
     }
@@ -95,6 +95,8 @@ void Plane::navigate()
         return;
     }
 
+    check_home_alt_change();
+
     // waypoint distance from plane
     // ----------------------------
     auto_state.wp_distance = current_loc.get_distance(next_WP_loc);
@@ -113,18 +115,18 @@ void Plane::navigate()
 float Plane::mode_auto_target_airspeed_cm()
 {
 #if HAL_QUADPLANE_ENABLED
-    if ((quadplane.options & QuadPlane::OPTION_MISSION_LAND_FW_APPROACH) &&
-        ((vtol_approach_s.approach_stage == Landing_ApproachStage::APPROACH_LINE) ||
-         (vtol_approach_s.approach_stage == Landing_ApproachStage::VTOL_LANDING))) {
+    if (quadplane.landing_with_fixed_wing_spiral_approach() &&
+        ((vtol_approach_s.approach_stage == VTOLApproach::Stage::APPROACH_LINE) ||
+         (vtol_approach_s.approach_stage == VTOLApproach::Stage::VTOL_LANDING))) {
         const float land_airspeed = TECS_controller.get_land_airspeed();
         if (is_positive(land_airspeed)) {
             return land_airspeed * 100;
         }
         // fallover to normal airspeed
-        return aparm.airspeed_cruise_cm;
+        return aparm.airspeed_cruise*100;
     }
     if (quadplane.in_vtol_land_approach()) {
-        return quadplane.get_land_airspeed() * 100;
+        return quadplane.get_land_airspeed_ms() * 100;
     }
 #endif
 
@@ -135,40 +137,49 @@ float Plane::mode_auto_target_airspeed_cm()
     }
 
     // fallover to normal airspeed
-    return aparm.airspeed_cruise_cm;
+    return aparm.airspeed_cruise*100;
 }
 
 void Plane::calc_airspeed_errors()
 {
-    float airspeed_measured = 0;
+    // Get the airspeed_estimate, update smoothed airspeed estimate
+    // NOTE:  we use the airspeed estimate function not direct sensor
+    //        as TECS may be using synthetic airspeed
+    float airspeed_measured = 0.1;
+    if (ahrs.airspeed_EAS(airspeed_measured)) {
+        smoothed_airspeed = MAX(0.1, smoothed_airspeed * 0.8f + airspeed_measured * 0.2f);
+    }
 
-    // we use the airspeed estimate function not direct sensor as TECS
-    // may be using synthetic airspeed
-    ahrs.airspeed_estimate(airspeed_measured);
+    // low pass filter speed scaler, with 1Hz cutoff, at 10Hz
+    const float speed_scaler = calc_speed_scaler();
+    const float cutoff_Hz = 2.0;
+    const float dt = 0.1;
+    surface_speed_scaler += calc_lowpass_alpha_dt(dt, cutoff_Hz) * (speed_scaler - surface_speed_scaler);
+
 
     // FBW_B/cruise airspeed target
     if (!failsafe.rc_failsafe && (control_mode == &mode_fbwb || control_mode == &mode_cruise)) {
-        if (g2.flight_options & FlightOptions::CRUISE_TRIM_AIRSPEED) {
-            target_airspeed_cm = aparm.airspeed_cruise_cm;
-        } else if (g2.flight_options & FlightOptions::CRUISE_TRIM_THROTTLE) {
+        if (flight_option_enabled(FlightOptions::CRUISE_TRIM_AIRSPEED)) {
+            target_airspeed_cm = aparm.airspeed_cruise*100;
+        } else if (flight_option_enabled(FlightOptions::CRUISE_TRIM_THROTTLE)) {
             float control_min = 0.0f;
             float control_mid = 0.0f;
             const float control_max = channel_throttle->get_range();
             const float control_in = get_throttle_input();
             switch (channel_throttle->get_type()) {
-                case RC_Channel::RC_CHANNEL_TYPE_ANGLE:
+            case RC_Channel::ControlType::ANGLE:
                     control_min = -control_max;
                     break;
-                case RC_Channel::RC_CHANNEL_TYPE_RANGE:
+            case RC_Channel::ControlType::RANGE:
                     control_mid = channel_throttle->get_control_mid();
                     break;
             }
             if (control_in <= control_mid) {
-                target_airspeed_cm = linear_interpolate(aparm.airspeed_min * 100, aparm.airspeed_cruise_cm,
+                target_airspeed_cm = linear_interpolate(aparm.airspeed_min * 100, aparm.airspeed_cruise*100,
                                                         control_in,
                                                         control_min, control_mid);
             } else {
-                target_airspeed_cm = linear_interpolate(aparm.airspeed_cruise_cm, aparm.airspeed_max * 100,
+                target_airspeed_cm = linear_interpolate(aparm.airspeed_cruise*100, aparm.airspeed_max * 100,
                                                         control_in,
                                                         control_mid, control_max);
             }
@@ -176,8 +187,8 @@ void Plane::calc_airspeed_errors()
             target_airspeed_cm = ((int32_t)(aparm.airspeed_max - aparm.airspeed_min) *
                                   get_throttle_input()) + ((int32_t)aparm.airspeed_min * 100);
         }
-#if OFFBOARD_GUIDED == ENABLED
-    } else if (control_mode == &mode_guided && guided_state.target_airspeed_cm >  0.0) { // if offbd guided speed change cmd not set, then this section is skipped
+#if AP_PLANE_OFFBOARD_GUIDED_SLEW_ENABLED
+    } else if (control_mode == &mode_guided && is_positive(guided_state.target_airspeed_cm)) { // if offboard guided speed change cmd not set, then this section is skipped
         // offboard airspeed demanded
         uint32_t now = AP_HAL::millis();
         float delta = 1e-3f * (now - guided_state.target_airspeed_time_ms);
@@ -192,39 +203,79 @@ void Plane::calc_airspeed_errors()
             target_airspeed_cm = constrain_float(MAX(guided_state.target_airspeed_cm, target_airspeed_cm), aparm.airspeed_min *100, aparm.airspeed_max *100);
         }
 
-#endif // OFFBOARD_GUIDED == ENABLED
+#endif // AP_PLANE_OFFBOARD_GUIDED_SLEW_ENABLED
 
-    } else if (flight_stage == AP_Vehicle::FixedWing::FLIGHT_LAND) {
+#if HAL_SOARING_ENABLED
+    } else if (g2.soaring_controller.is_active() && g2.soaring_controller.get_throttle_suppressed()) {
+        if (control_mode == &mode_thermal) {
+            float arspd = g2.soaring_controller.get_thermalling_target_airspeed();
+
+            if (arspd > 0) {
+                target_airspeed_cm = arspd * 100;
+            } else {
+                target_airspeed_cm = aparm.airspeed_cruise*100;
+            }
+        } else if (control_mode == &mode_auto) {
+            float arspd = g2.soaring_controller.get_cruising_target_airspeed();
+
+            if (arspd > 0) {
+                target_airspeed_cm = arspd * 100;
+            } else {
+                target_airspeed_cm = aparm.airspeed_cruise*100;
+            }
+        }
+#endif
+
+    } else if (flight_stage == AP_FixedWing::FlightStage::LAND) {
         // Landing airspeed target
-        target_airspeed_cm = landing.get_target_airspeed_cm();
+        target_airspeed_cm = landing.get_target_airspeed_ms() * 100.0f;  // m/s -> cm/s
     } else if (control_mode == &mode_guided && new_airspeed_cm > 0) { //DO_CHANGE_SPEED overrides onboard guided speed commands, user would have re-enter guided mode to revert
                        target_airspeed_cm = new_airspeed_cm;
     } else if (control_mode == &mode_auto) {
         target_airspeed_cm = mode_auto_target_airspeed_cm();
 #if HAL_QUADPLANE_ENABLED
     } else if (control_mode == &mode_qrtl && quadplane.in_vtol_land_approach()) {
-        target_airspeed_cm = quadplane.get_land_airspeed() * 100;
+        target_airspeed_cm = quadplane.get_land_airspeed_ms() * 100;
 #endif
     } else {
         // Normal airspeed target for all other cases
-        target_airspeed_cm = aparm.airspeed_cruise_cm;
+        target_airspeed_cm = aparm.airspeed_cruise*100;
     }
 
     // Set target to current airspeed + ground speed undershoot,
     // but only when this is faster than the target airspeed commanded
     // above.
     if (control_mode->does_auto_throttle() &&
-    	aparm.min_gndspeed_cm > 0 &&
-    	control_mode != &mode_circle) {
-        int32_t min_gnd_target_airspeed = airspeed_measured*100 + groundspeed_undershoot;
-        if (min_gnd_target_airspeed > target_airspeed_cm) {
-            target_airspeed_cm = min_gnd_target_airspeed;
+        groundspeed_undershoot_is_valid &&
+        control_mode != &mode_circle) {
+        /*
+          calculate how much extra airspeed we need to target to
+          achieve the desired ground speed in MIN_GROUNDSPEED
+
+          we quantise the additional airspeed and apply a hysteresis
+          in order to avoid triggering an oscillation in TECS
+         */
+        float target_airspeed = target_airspeed_cm*0.01;
+        float EAS_undershoot = (groundspeed_undershoot*0.01) / ahrs.get_EAS2TAS();
+        float min_gnd_target_airspeed = airspeed_measured + EAS_undershoot;
+        float airspeed_target_offset = min_gnd_target_airspeed > target_airspeed? (min_gnd_target_airspeed - target_airspeed) : 0;
+
+        // round up to nearest m/s
+        airspeed_target_offset = int(airspeed_target_offset + 0.5);
+
+        // apply some hysteresis
+        if (airspeed_target_offset < last_groundspeed_undershoot_offset &&
+            last_groundspeed_undershoot_offset - airspeed_target_offset < 1.2) {
+            airspeed_target_offset = last_groundspeed_undershoot_offset;
         }
+        last_groundspeed_undershoot_offset = airspeed_target_offset;
+
+        target_airspeed_cm += airspeed_target_offset * 100;
     }
 
     // when using the special GUIDED mode features for slew control, don't allow airspeed nudging as it doesn't play nicely.
-#if OFFBOARD_GUIDED == ENABLED
-    if (control_mode == &mode_guided && !is_zero(guided_state.target_airspeed_cm) && (airspeed_nudge_cm != 0)) {
+#if AP_PLANE_OFFBOARD_GUIDED_SLEW_ENABLED
+    if (control_mode == &mode_guided && is_positive(guided_state.target_airspeed_cm) && (airspeed_nudge_cm != 0)) {
         airspeed_nudge_cm = 0; //airspeed_nudge_cm forced to zero
     }
 #endif
@@ -234,8 +285,12 @@ void Plane::calc_airspeed_errors()
         target_airspeed_cm += airspeed_nudge_cm;
     }
 
+    float airspeed_lower_bound = is_positive(aparm.airspeed_stall)
+                                     ? aparm.airspeed_stall
+                                     : aparm.airspeed_min;
+
     // Apply airspeed limit
-    target_airspeed_cm = constrain_int32(target_airspeed_cm, aparm.airspeed_min*100, aparm.airspeed_max*100);
+    target_airspeed_cm = constrain_int32(target_airspeed_cm, airspeed_lower_bound*100, aparm.airspeed_max*100);
 
     // use the TECS view of the target airspeed for reporting, to take
     // account of the landing speed
@@ -246,16 +301,18 @@ void Plane::calc_gndspeed_undershoot()
 {
     // Use the component of ground speed in the forward direction
     // This prevents flyaway if wind takes plane backwards
-    if (gps.status() >= AP_GPS::GPS_OK_FIX_2D) {
-	      Vector2f gndVel = ahrs.groundspeed_vector();
+    Vector3f velNED;
+    if (ahrs.have_inertial_nav() && ahrs.get_velocity_NED(velNED)) {
         const Matrix3f &rotMat = ahrs.get_rotation_body_to_ned();
         Vector2f yawVect = Vector2f(rotMat.a.x,rotMat.b.x);
         if (!yawVect.is_zero()) {
             yawVect.normalize();
-            float gndSpdFwd = yawVect * gndVel;
-            groundspeed_undershoot = (aparm.min_gndspeed_cm > 0) ? (aparm.min_gndspeed_cm - gndSpdFwd*100) : 0;
+            float gndSpdFwd = yawVect * velNED.xy();
+            groundspeed_undershoot_is_valid = aparm.min_groundspeed > 0;
+            groundspeed_undershoot = groundspeed_undershoot_is_valid ? (aparm.min_groundspeed*100 - gndSpdFwd*100) : 0;
         }
     } else {
+        groundspeed_undershoot_is_valid = false;
         groundspeed_undershoot = 0;
     }
 }
@@ -286,7 +343,7 @@ void Plane::update_loiter_update_nav(uint16_t radius)
     if ((loiter.start_time_ms == 0 &&
          (control_mode == &mode_auto || control_mode == &mode_guided) &&
          auto_state.crosstrack &&
-         current_loc.get_distance(next_WP_loc) > radius*3) ||
+         current_loc.get_distance(next_WP_loc) > 3 * nav_controller->loiter_radius(radius)) ||
         quadplane_qrtl_switch) {
         /*
           if never reached loiter point and using crosstrack and somewhat far away from loiter point
@@ -314,6 +371,9 @@ void Plane::update_loiter(uint16_t radius)
         }
     }
 
+    // the radius actually being used by the controller is required by other functions
+    loiter.radius = (float)radius;
+
     update_loiter_update_nav(radius);
 
     if (loiter.start_time_ms == 0) {
@@ -335,7 +395,7 @@ void Plane::update_loiter(uint16_t radius)
 }
 
 /*
-  handle speed and height control in FBWB or CRUISE mode.
+  handle speed and height control in FBWB, CRUISE, and optionally, LOITER mode.
   In this mode the elevator is used to change target altitude. The
   throttle is used to change target airspeed or throttle
  */
@@ -350,20 +410,24 @@ void Plane::update_fbwb_speed_height(void)
 
         target_altitude.last_elev_check_us = now;
 
-        float elevator_input = channel_pitch->get_control_in() / 4500.0f;
+        float elevator_input = channel_pitch->get_control_in() * (1/4500.0);
 
         if (g.flybywire_elev_reverse) {
             elevator_input = -elevator_input;
         }
 
-        int32_t alt_change_cm = g.flybywire_climb_rate * elevator_input * dt * 100;
-        change_target_altitude(alt_change_cm);
-
-        if (is_zero(elevator_input) && !is_zero(target_altitude.last_elevator_input)) {
-            // the user has just released the elevator, lock in
-            // the current altitude
+        bool input_stop_climb = !is_positive(elevator_input) && is_positive(target_altitude.last_elevator_input);
+        bool input_stop_descent = !is_negative(elevator_input) && is_negative(target_altitude.last_elevator_input);
+        if (input_stop_climb || input_stop_descent) {
+            // user elevator input reached or passed zero, lock in the current altitude
             set_target_altitude_current();
         }
+
+        float climb_rate = g.flybywire_climb_rate * elevator_input;
+        climb_rate = constrain_float(climb_rate, -TECS_controller.get_max_sinkrate(), TECS_controller.get_max_climbrate());
+
+        int32_t alt_change_cm = climb_rate * dt * 100;
+        change_target_altitude(alt_change_cm);
 
 #if HAL_SOARING_ENABLED
         if (g2.soaring_controller.is_active()) {
@@ -381,9 +445,7 @@ void Plane::update_fbwb_speed_height(void)
         target_altitude.last_elevator_input = elevator_input;
     }
 
-    check_fbwb_minimum_altitude();
-
-    altitude_error_cm = calc_altitude_error_cm();
+    check_fbwb_altitude();
 
     calc_throttle();
     calc_nav_pitch();

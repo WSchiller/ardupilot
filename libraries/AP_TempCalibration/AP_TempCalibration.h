@@ -18,9 +18,12 @@
   and opportunistically calibrates sensors when the vehicle is still
  */
 
-#include <AP_HAL/AP_HAL.h>
+#include "AP_TempCalibration_config.h"
+
+#if AP_TEMPCALIBRATION_ENABLED
+
+#include <AP_Math/vector3.h>
 #include <AP_Param/AP_Param.h>
-#include <AP_InertialSensor/AP_InertialSensor.h>
 
 class AP_TempCalibration
 {
@@ -36,8 +39,7 @@ public:
     void update(void);
 
     /* Do not allow copies */
-    AP_TempCalibration(const AP_TempCalibration &other) = delete;
-    AP_TempCalibration &operator=(const AP_TempCalibration&) = delete;
+    CLASS_NO_COPY(AP_TempCalibration);
 
     enum {
         TC_DISABLED = 0,
@@ -80,3 +82,5 @@ private:
     float calculate_p_range(float baro_factor) const;
     
 };
+
+#endif  // AP_TEMPCALIBRATION_ENABLED

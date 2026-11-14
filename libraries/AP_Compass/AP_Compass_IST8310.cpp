@@ -18,6 +18,8 @@
  */
 #include "AP_Compass_IST8310.h"
 
+#if AP_COMPASS_IST8310_ENABLED
+
 #include <stdio.h>
 #include <utility>
 
@@ -76,7 +78,7 @@ static const int16_t IST8310_MIN_VAL_Z  = -IST8310_MAX_VAL_Z;
 
 extern const AP_HAL::HAL &hal;
 
-AP_Compass_Backend *AP_Compass_IST8310::probe(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev,
+AP_Compass_Backend *AP_Compass_IST8310::probe(AP_HAL::OwnPtr<AP_HAL::Device> dev,
                                               bool force_external,
                                               enum Rotation rotation)
 {
@@ -84,7 +86,7 @@ AP_Compass_Backend *AP_Compass_IST8310::probe(AP_HAL::OwnPtr<AP_HAL::I2CDevice> 
         return nullptr;
     }
 
-    AP_Compass_IST8310 *sensor = new AP_Compass_IST8310(std::move(dev), force_external, rotation);
+    AP_Compass_IST8310 *sensor = NEW_NOTHROW AP_Compass_IST8310(std::move(dev), force_external, rotation);
     if (!sensor || !sensor->init()) {
         delete sensor;
         return nullptr;
@@ -110,6 +112,22 @@ bool AP_Compass_IST8310::init()
 
     // high retries for init
     _dev->set_retries(10);
+
+    /*
+      unfortunately the IST8310 employs the novel concept of a
+      writeable WHOAMI register. The register can become corrupt due
+      to bus noise, and what is worse it persists the corruption even
+      across a power cycle. If you power it off for 30s or more then
+      it will reset to the default of 0x10, but for less than that the
+      value of WAI is unreliable.
+
+      To avoid this issue we do a reset of the device before we probe
+      the WAI register. This is nasty as we don't yet know we've found
+      a real IST8310, but it is the best we can do given the bad
+      hardware design of the sensor
+     */
+    _dev->write_register(CNTL2_REG, CNTL2_VAL_SRST);
+    hal.scheduler->delay(10);
 
     uint8_t whoami;
     if (!_dev->read_registers(WAI_REG, &whoami, 1) ||
@@ -154,18 +172,17 @@ bool AP_Compass_IST8310::init()
 
     // register compass instance
     _dev->set_device_type(DEVTYPE_IST8310);
-    if (!register_compass(_dev->get_bus_id(), _instance)) {
+    if (!register_compass(_dev->get_bus_id())) {
         return false;
     }
-    set_dev_id(_instance, _dev->get_bus_id());
 
     printf("%s found on bus %u id %u address 0x%02x\n", name,
-           _dev->bus_num(), _dev->get_bus_id(), _dev->get_bus_address());
+           _dev->bus_num(), unsigned(_dev->get_bus_id()), _dev->get_bus_address());
 
-    set_rotation(_instance, _rotation);
+    set_rotation(_rotation);
 
     if (_force_external) {
-        set_external(_instance, true);
+        set_external(true);
     }
     
     _periodic_handle = _dev->register_periodic_callback(SAMPLING_PERIOD_USEC,
@@ -229,23 +246,7 @@ void AP_Compass_IST8310::timer()
     /* Resolution: 0.3 µT/LSB - already convert to milligauss */
     Vector3f field = Vector3f{x * 3.0f, y * 3.0f, z * 3.0f};
 
-#ifdef HAL_IST8310_I2C_HEATER_OFFSET
-    /*
-      the internal IST8310 can be impacted by the magnetic field from
-      a heater. We use the heater duty cycle to correct for the error
-     */
-    if (!is_external(_instance) && AP_HAL::Device::devid_get_bus_type(_dev->get_bus_id()) == AP_HAL::Device::BUS_TYPE_I2C) {
-        const auto *bc = AP::boardConfig();
-        if (bc) {
-            field += HAL_IST8310_I2C_HEATER_OFFSET * bc->get_heater_duty_cycle() * 0.01;
-        }
-    }
-#endif
-    
-    accumulate_sample(field, _instance);
+    accumulate_sample(field);
 }
 
-void AP_Compass_IST8310::read()
-{
-    drain_accumulated_samples(_instance);
-}
+#endif  // AP_COMPASS_IST8310_ENABLED

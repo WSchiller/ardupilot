@@ -15,6 +15,8 @@
 
 #include "AP_Compass_MMC5xx3.h"
 
+#if AP_COMPASS_MMC5XX3_ENABLED
+
 #include <AP_HAL/AP_HAL.h>
 #include <stdio.h>
 
@@ -47,7 +49,7 @@ AP_Compass_Backend *AP_Compass_MMC5XX3::probe(AP_HAL::OwnPtr<AP_HAL::Device> dev
     if (!dev) {
         return nullptr;
     }
-    AP_Compass_MMC5XX3 *sensor = new AP_Compass_MMC5XX3(std::move(dev), force_external, rotation);
+    AP_Compass_MMC5XX3 *sensor = NEW_NOTHROW AP_Compass_MMC5XX3(std::move(dev), force_external, rotation);
     if (!sensor || !sensor->init()) {
         delete sensor;
         return nullptr;
@@ -61,14 +63,14 @@ AP_Compass_MMC5XX3::AP_Compass_MMC5XX3(AP_HAL::OwnPtr<AP_HAL::Device> _dev,
                                        enum Rotation _rotation)
     : dev(std::move(_dev))
     , force_external(_force_external)
-    , rotation(_rotation)
     , have_initial_offset(false)
+    , rotation(_rotation)
 {
 }
 
 bool AP_Compass_MMC5XX3::init()
 {
-    // take i2c bus sempahore
+    // take i2c bus semaphore
     WITH_SEMAPHORE(dev->get_semaphore());
 
     dev->set_retries(10);
@@ -78,9 +80,17 @@ bool AP_Compass_MMC5XX3::init()
         dev->set_read_flag(0x80);
     }
 
-    uint8_t whoami;
-    if (!dev->read_registers(REG_PRODUCT_ID, &whoami, 1) ||
-        whoami != MMC5983_ID) {
+    // Reading REG_PRODUCT_ID fails sometimes on SPI, so we retry up to 10 times
+    uint8_t whoami = 0;
+    uint8_t tries = 10;
+    while (whoami == 0 && tries > 0) {
+        tries--;
+        dev->read_registers(REG_PRODUCT_ID, &whoami, 1);
+        hal.scheduler->delay(5);
+    }
+
+    if (whoami != MMC5983_ID) {
+        // printf("MMC5983 got unexpected product id: %d, expected: %d\n", whoami, MMC5983_ID);
         // not a MMC5983
         return false;
     }
@@ -91,31 +101,30 @@ bool AP_Compass_MMC5XX3::init()
     // 10ms minimum startup time
     hal.scheduler->delay(15);
 
-    if (!dev->write_register(REG_CONTROL1, REG_CONTROL1_BW0 | REG_CONTROL1_BW1)) {
+    // setup for 100Hz output
+    if (!dev->write_register(REG_CONTROL1, 0)) {
         return false;
-    } //  // This BW config sets the sensor measurement time to 0.5ms and filter bandwidth to 800Hz
+    }
 
 
     /* register the compass instance in the frontend */
     dev->set_device_type(DEVTYPE_MMC5983);
-    if (!register_compass(dev->get_bus_id(), compass_instance)) {
+    if (!register_compass(dev->get_bus_id())) {
         return false;
     }
 
-    set_dev_id(compass_instance, dev->get_bus_id());
+    printf("Found a MMC5983 on 0x%x as compass %u\n", unsigned(dev->get_bus_id()), instance);
 
-    printf("Found a MMC5983 on 0x%x as compass %u\n", dev->get_bus_id(), compass_instance);
-
-    set_rotation(compass_instance, rotation);
+    set_rotation(rotation);
 
     if (force_external) {
-        set_external(compass_instance, true);
+        set_external(true);
     }
 
     dev->set_retries(1);
 
-    // call timer() at 1kHz
-    dev->register_periodic_callback(1000,
+    // call timer() at 100Hz
+    dev->register_periodic_callback(10000U,
                                     FUNCTOR_BIND_MEMBER(&AP_Compass_MMC5XX3::timer, void));
 
     return true;
@@ -124,10 +133,10 @@ bool AP_Compass_MMC5XX3::init()
 void AP_Compass_MMC5XX3::timer()
 {
     // recalculate the offset with set/reset operation every measure_count_limit measurements
-    // sensor is read at about 500Hz, so about every 10 seconds
-    const uint16_t measure_count_limit = 5000;
-    const uint16_t zero_offset = 32768; // 16 bit mode
-    const uint16_t sensitivity = 4096; // counts per Gauss, 16 bit mode
+    // sensor is read at about 100Hz, so about every 10 seconds
+    const uint16_t measure_count_limit = 1000U;
+    const uint16_t zero_offset = 32768U; // 16 bit mode
+    const uint16_t sensitivity = 4096U; // counts per Gauss, 16 bit mode
     constexpr float counts_to_milliGauss = 1.0e3f / sensitivity;
 
     /*
@@ -239,7 +248,7 @@ void AP_Compass_MMC5XX3::timer()
             offset = offset * 0.5f + new_offset * 0.5f;
         }
 
-        accumulate_sample(field, compass_instance);
+        accumulate_sample(field);
 
         if (!dev->write_register(REG_CONTROL0, REG_CONTROL0_TMM)) {
             printf("failed to initiate measurement\n");
@@ -277,7 +286,7 @@ void AP_Compass_MMC5XX3::timer()
                        float((data1[4] << 8) + data1[5]) - zero_offset};
         field *= counts_to_milliGauss;
         field -= offset;
-        accumulate_sample(field, compass_instance);
+        accumulate_sample(field);
 
         // we stay in STATE_MEASURE for measure_count_limit cycles
         if (measure_count++ >= measure_count_limit) {
@@ -293,7 +302,5 @@ void AP_Compass_MMC5XX3::timer()
     }
 }
 
-void AP_Compass_MMC5XX3::read()
-{
-    drain_accumulated_samples(compass_instance);
-}
+#endif  // AP_COMPASS_MMC5XX3_ENABLED
+

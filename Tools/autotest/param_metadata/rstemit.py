@@ -1,5 +1,7 @@
-#!/usr/bin/env python
-from __future__ import print_function
+#!/usr/bin/env python3
+
+# flake8: noqa
+
 import re
 from param import known_param_fields, known_units
 from emit import Emit
@@ -12,8 +14,6 @@ except Exception:
 # Emit docs in a RST format
 class RSTEmit(Emit):
     def blurb(self):
-        if self.sitl:
-            return """SITL parameters"""
         return """This is a complete list of the parameters which can be set (e.g. via the MAVLink protocol) to control vehicle behaviour. They are stored in persistent storage on the vehicle.
 
 This list is automatically generated from the latest ardupilot source code, and so may contain parameters which are not yet in the stable released versions of the code.
@@ -30,10 +30,8 @@ This list is automatically generated from the latest ardupilot source code, and 
         self.f = open(self.output_fname(), mode='w')
         self.spacer = re.compile("^", re.MULTILINE)
         self.rstescape = re.compile("([^a-zA-Z0-9\n 	])")
-        if self.sitl:
-            parameterlisttype = "SITL Parameter List"
-        else:
-            parameterlisttype = "Complete Parameter List"
+        self.emitted_sitl_heading = False
+        parameterlisttype = "Complete Parameter List"
         parameterlisttype += "\n" + "=" * len(parameterlisttype)
         self.preamble = """.. Dynamically generated list of documented parameters
 .. This page was generated using {toolname}
@@ -57,7 +55,17 @@ This list is automatically generated from the latest ardupilot source code, and 
         return ret
 
     def close(self):
-        self.f.write(self.preamble)
+        preamble = self.preamble
+        # Prepend optional firmware metadata as RST comments
+        if self.git_sha is not None or self.git_tag is not None:
+            firmware_lines = [".. Firmware metadata\n"]
+            if self.git_sha is not None:
+                firmware_lines.append(f".. git_sha: {self.git_sha}\n")
+            if self.git_tag is not None:
+                firmware_lines.append(f".. git_tag: {self.git_tag}\n")
+            firmware_lines.append("\n")
+            preamble = "".join(firmware_lines) + preamble
+        self.f.write(preamble)
         self.f.write(self.t)
         self.f.close()
 
@@ -196,8 +204,17 @@ This list is automatically generated from the latest ardupilot source code, and 
         return ''
 
     def emit(self, g):
-        tag = '%s Parameters' % self.escape(g.reference)
-        reference = "parameters_" + g.reference
+        # make only a single group for SIM_ parameters
+        do_emit_heading = True
+        if g.reference.startswith("SIM_"):
+            if self.emitted_sitl_heading:
+                do_emit_heading = False
+            self.emitted_sitl_heading = True
+            tag = "Simulation Parameters"
+            reference = "parameters_sim"
+        else:
+            tag = '%s Parameters' % self.escape(g.reference)
+            reference = "parameters_" + g.reference
 
         field_table_info = {
             "Values": {
@@ -208,7 +225,9 @@ This list is automatically generated from the latest ardupilot source code, and 
             },
         }
 
-        ret = """
+        ret = ""
+        if do_emit_heading:
+            ret = """
 
 .. _{reference}:
 
@@ -218,6 +237,8 @@ This list is automatically generated from the latest ardupilot source code, and 
            reference=reference)
 
         for param in g.params:
+            if not self.should_emit_param(param):
+                continue
             if not hasattr(param, 'DisplayName') or not hasattr(param, 'Description'):
                 continue
             d = param.__dict__
@@ -256,14 +277,16 @@ This list is automatically generated from the latest ardupilot source code, and 
             headings = []
             row = []
             for field in sorted(param.__dict__.keys()):
-                if (field not in ['name', 'DisplayName', 'Description', 'User', 'RebootRequired'] and
+                if not self.should_emit_field(param, field):
+                    continue
+                if (field not in ['name', 'DisplayName', 'Description', 'User', 'SortValues', 'RebootRequired'] and
                         field in known_param_fields):
                     headings.append(field)
                     if field in field_table_info and Emit.prog_values_field.match(param.__dict__[field]):
                         ret += self.render_table_headings(ret, row, headings, field_table_info, field, param)
                     elif field == "Range":
                         (param_min, param_max) = (param.__dict__[field]).split(' ')
-                        row.append("%s - %s" % (param_min, param_max,))
+                        row.append("%s to %s" % (param_min, param_max,))
                     elif field == 'Units':
                         abbreviated_units = param.__dict__[field]
                         if abbreviated_units != '':

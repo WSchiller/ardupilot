@@ -51,6 +51,9 @@ SECTIONS
     {
         KEEP(*(.vectors))
     } > flash
+    __firmware_crc_start__ = LOADADDR(startup);
+    __firmware_crc_ext_start__ = 0;
+    __firmware_crc_ext_end__ = 0;
 
     constructors : ALIGN(4) SUBALIGN(4)
     {
@@ -72,7 +75,11 @@ SECTIONS
     {
         /* we want app_descriptor near the start of flash so a false
            positive isn't found by the bootloader (eg. ROMFS) */
+        KEEP(*(.apsec_data));
         KEEP(*(.app_descriptor));
+        PROVIDE(__usb_debug_text_start = .);
+        *USB_Debug.cpp*.o(.text .text.*)
+        PROVIDE(__usb_debug_text_end = .);
         *(.text)
         *(.text.*)
         *(.rodata)
@@ -169,6 +176,7 @@ SECTIONS
         *(.ram0_init.*)
         . = ALIGN(4);
     } > ram0 AT > flash
+    __firmware_crc_end__ = LOADADDR(.ram0_init) + SIZEOF(.ram0_init);
 
     .ram0 (NOLOAD) : ALIGN(4)
     {
@@ -192,4 +200,14 @@ SECTIONS
         . = ORIGIN(HEAP_RAM) + LENGTH(HEAP_RAM);
         __heap_end__ = .;
     } > HEAP_RAM
+
+    /* The crash log uses the unused part of a flash section.*/
+    .crash_log (NOLOAD) :
+    {
+        . = ALIGN(32);
+        __crash_log_base__ = .;
+        . = ORIGIN(flash) + LENGTH(flash);
+        __crash_log_end__ = .;
+    } > flash
+
 }
